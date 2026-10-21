@@ -1749,18 +1749,18 @@ def _verdict_preview(facts, releases):
     if blk and blk["cls"] == "bad":
         if php_seen or blk.get("php405"):
             return "ASSUMED VULNERABLE", "bad", php, blk
-        return "UNKNOWN", "info", php, blk
+        return "UNKNOWN", "warn", php, blk
     if blk and blk.get("static") and php["cls"] == "info" and not php_seen:
         return "NO PHP DETECTED", "ok", php, blk
     if php["cls"] == "ok":
         return "PATCHED", "ok", php, blk
-    return "UNKNOWN", "info", php, blk
+    return "UNKNOWN", "warn", php, blk
 
 
 _VERDICT_SHOWN = {"BLOCKED": "(PROBABLY) NOT VULNERABLE",
                   "PATCHED": "NOT VULNERABLE (PATCHED)", "EXPOSED": "VULNERABLE",
                   "UNPATCHED": "VULNERABLE (UNPATCHED PHP)",
-                  "TEST BLOCKED": "COULD NOT TEST"}
+                  "TEST BLOCKED": "COULD NOT TEST", "UNKNOWN": "INCONCLUSIVE"}
 
 
 def shown_label(label):

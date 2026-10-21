@@ -42,7 +42,7 @@ defenses against CVE-2026-109618/619 are observable from the outside:
 - COULD NOT TEST (orange): bot protection / firewall refused every request
   (GET included) or answered with a challenge (202).
 - UNREACHABLE: no usable answer (timeouts, TLS errors, CDN "origin down").
-- UNKNOWN: anything not covered above (remote probing cannot see everything;
+- INCONCLUSIVE (orange): anything not covered above (remote probing cannot see everything;
   the checker says so instead of over-claiming).
 
 ## Honest limits

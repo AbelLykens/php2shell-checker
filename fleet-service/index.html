@@ -264,7 +264,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.45";
+const BUILD = "2026-10-21.46";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -583,6 +583,7 @@ const VERDICT_SHOWN = {
   'EXPOSED': 'VULNERABLE',
   'UNPATCHED': 'VULNERABLE (UNPATCHED PHP)',
   'TEST BLOCKED': 'COULD NOT TEST',
+  'UNKNOWN': 'INCONCLUSIVE',
 };
 function shownLabel(l) { return VERDICT_SHOWN[l] || l; }
 
@@ -612,6 +613,8 @@ function interpret(facts) {
   // nothing POST-shaped is processed here AND zero PHP signs anywhere
   else if (blk && blk.static && php.cls === 'info' && !phpSeen) { cls = 'ok'; label = 'NO PHP DETECTED'; }
   else if (php.cls === 'ok') { cls = 'ok'; label = 'PATCHED'; }
+  // shown as orange INCONCLUSIVE: the check could not decide either way
+  if (label === 'UNKNOWN') cls = 'warn';
   return { cls, label, php, blk };
 }
 
