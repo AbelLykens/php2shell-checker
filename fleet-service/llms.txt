@@ -1,7 +1,11 @@
 # php2shell check — php2shell.site
 
 Public checker for the patch & mitigation status of CVE-2026-109618 / CVE-2026-109619
-(PHP `session.upload_progress` use-after-free; "php2shell"). One URL at a time,
+("php2shell"): two critical unauthenticated remote-code-execution bugs in PHP
+(RCE via out-of-memory corruption; RCE via stale global state). Fixed in PHP
+8.5.12, 8.4.27, 8.3.36 and 8.2.35 (php.net advisory, 21 Oct 2026:
+https://www.php.net/archive/2026.php#2026-10-21-5 ; GHSA-w8hw-w9fx-j79w, GHSA-6wmf-4rv5-p3rp). PHP 8.1 and older get no
+release from the PHP project (vendor / source backports only). One URL at a time,
 submitted at `/<host>` (the path after `/` is the target, e.g.
 `/example.com`) or through the JSON API below. Only bare domains/subdomains
 are scanned — any path/query/fragment on the target is stripped, and the

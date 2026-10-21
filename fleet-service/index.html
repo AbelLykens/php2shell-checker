@@ -153,8 +153,9 @@
    aria-label="Source code on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
 <div class="wrap">
   <h1><a class="selflink" href="/" title="php2shell.site — this page">php2shell.site</a> <a class="pill pill-warn" href="https://github.com/AbelLykens/php2shell-checker/commits/main" target="_blank" rel="noopener noreferrer" title="Recent changes on GitHub" style="font-size:11px;font-weight:600;vertical-align:middle;margin-left:6px;text-transform:none;text-decoration:none">active development</a></h1>
-  <p class="sub">php2shell check &mdash; Patch &amp; mitigation status for CVE-2026-109618/619 (PHP
-     <code>session.upload_progress</code>), for URLs you are authorized to test.
+  <p class="sub">php2shell check &mdash; patch &amp; mitigation status for
+     <a href="https://www.php.net/archive/2026.php#2026-10-21-5" target="_blank" rel="noopener">CVE-2026-109618 / CVE-2026-109619</a>, two critical
+     unauthenticated remote-code-execution bugs in PHP, for URLs you are authorized to test.
      All verdict logic runs locally in your browser — the server only relays raw HTTP facts.</p>
 
   <div class="card">
@@ -193,11 +194,48 @@
 
   <div class="card" id="advisorycard">
     <div class="resrow" style="margin-top:0">
-      <span class="dimlabel">advisory ETA</span>
-      <span class="mono" id="advisorycount" style="font-size:20px;font-weight:600">T-&hellip;</span>
+      <span class="dimlabel">advisory</span>
+      <span><span class="chip bad">out now &mdash; update PHP</span>
+        <span class="small">php.net, 21&nbsp;Oct&nbsp;2026:
+        <a href="https://www.php.net/archive/2026.php#2026-10-21-5" target="_blank" rel="noopener">Critical remote code execution vulnerabilities, update now</a></span></span>
     </div>
-    <div class="small" style="margin-top:6px">Patched-release list (fixed PHP versions) is
-    published at 14:00&nbsp;UTC on 21&nbsp;Oct&nbsp;2026. Countdown runs in your browser.</div>
+    <div class="small" style="margin-top:8px;line-height:1.6">
+      <b>Fixed in PHP 8.5.12, 8.4.27, 8.3.36 and 8.2.35</b>
+      (<a href="https://www.php.net/downloads.php?source=Y" target="_blank" rel="noopener">source</a>,
+      <a href="https://www.php.net/downloads.php?os=windows" target="_blank" rel="noopener">Windows</a>;
+      Linux distributions and LTS vendors got the patches in advance &mdash; check your vendor).
+      <b>At risk:</b> every PHP installation serving web requests &mdash; PHP-FPM, Apache mod_php, php-cgi,
+      FrankenPHP, LiteSpeed; highest for mod_php, where an unauthenticated request can trigger the attack
+      before any application code runs.<br>
+      <b>CVE-2026-109618</b> (<a href="https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w" target="_blank" rel="noopener">GHSA-w8hw-w9fx-j79w</a>):
+      RCE via out-of-memory corruption during request setup.
+      <b>CVE-2026-109619</b> (<a href="https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp" target="_blank" rel="noopener">GHSA-6wmf-4rv5-p3rp</a>):
+      RCE via stale global state reused by a later request on the same worker.<br>
+      <b>PHP 8.1 and older</b> get no release from the PHP project: use your vendor&rsquo;s backport or upgrade;
+      minimal source backports exist for
+      <a href="https://github.com/php/php-src/tree/PHP-7.4-CVE-2026-109618-109619" target="_blank" rel="noopener">7.4</a>,
+      <a href="https://github.com/php/php-src/tree/PHP-8.0-CVE-2026-109618-109619" target="_blank" rel="noopener">8.0</a> and
+      <a href="https://github.com/php/php-src/tree/PHP-8.1-CVE-2026-109618-109619" target="_blank" rel="noopener">8.1</a>.
+      Using rpms.remirepo.net? It has no update today &mdash; switch to distribution packages or build from source.
+    </div>
+    <details style="margin-top:8px">
+      <summary class="small">If you cannot update immediately (reduces exposure, does <b>not</b> make PHP safe)</summary>
+      <div class="small" style="margin-top:6px;line-height:1.6">
+        <b>CVE-2026-109618 (OOM corruption):</b>
+        <ul style="margin:4px 0 6px;padding-left:18px">
+          <li><code>memory_limit=-1</code>, set where applications can&rsquo;t override it (e.g. <code>php_admin_value</code> in the FPM pool or Apache config); make sure no pool/directory/app setting brings a finite limit back.</li>
+          <li>Low <code>post_max_size</code>: <code>8M</code> without file uploads, <code>32M</code> with them; keep <code>upload_max_filesize</code> below it. Also limit decoded request size, field count, multipart part count, header count and nesting depth at the web server / proxy &mdash; including requests without a usable Content-Length.</li>
+          <li>Container / cgroup memory limit as an availability boundary (ideally killing only the affected worker). Do <b>not</b> use <code>RLIMIT_AS</code> / <code>RLIMIT_DATA</code> &mdash; they can cause the vulnerable allocation failure.</li>
+        </ul>
+        <b>CVE-2026-109619 (stale global state):</b>
+        <ul style="margin:4px 0 0;padding-left:18px">
+          <li><code>session.upload_progress.enabled=0</code> in php.ini, the FPM pool or server config (applies before request parsing), then <b>restart every worker</b>. Not via <code>ini_set()</code> or FPM <code>.user.ini</code>. Blocks the confirmed session paths only.</li>
+          <li>PHP 8.5: <code>fatal_error_backtraces=0</code> and restart every worker (blocks the confirmed backtrace path only).</li>
+          <li>Remove invalid/deprecated per-request settings that emit diagnostics before initialization &mdash; hiding them (<code>error_reporting</code>, <code>display_errors</code>, <code>@</code>) does not help.</li>
+          <li>Fix attacker-reachable fatal errors and execution timeouts (callbacks, upload/import processing, cleanup).</li>
+        </ul>
+      </div>
+    </details>
   </div>
 
   <div class="card" id="diycard">
@@ -264,7 +302,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.47";
+const BUILD = "2026-10-21.48";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -291,7 +329,7 @@ function versionStatus(v) {
   if (!SERVER_RELEASES.length) return { cls: 'info', text: v + ' — patched list not set' };
   const [maj, min] = parseVer(v);
   // PHP 5/6/7 are EOL and never receive this fix (vendor: PHP 8 only).
-  if (maj < 8) return { cls: 'bad', text: v + ' — EOL branch, no fix coming' };
+  if (maj < 8) return { cls: 'bad', text: v + ' — EOL branch, no official fix' };
   let entry = null;
   for (const p of SERVER_RELEASES) {
     const [pm, pn] = parseVer(p);
@@ -300,7 +338,7 @@ function versionStatus(v) {
   // an 8.x branch older than every listed 8.x branch is EOL (8.0/8.1 by now)
   const minors = SERVER_RELEASES.map(parseVer).filter(p => p[0] === maj).map(p => p[1]);
   if (entry === null && minors.length && min < Math.min.apply(null, minors))
-    return { cls: 'bad', text: v + ' — EOL branch, no fix coming' };
+    return { cls: 'bad', text: v + ' — EOL branch, no official fix' };
   if (entry === null) return { cls: 'info', text: v + ' — no data for this branch — unknown' };
   if (cmpVer(v, entry) >= 0) return { cls: 'ok', text: v + ' ≥ ' + entry };
   return { cls: 'bad', text: v + ' < ' + entry };
@@ -737,7 +775,7 @@ function explainVerdict(f, v) {
     case 'UNPATCHED':
       summary = 'The server advertises an unpatched PHP version banner (' + (v.php ? esc(v.php.text) : 'vulnerable branch') + ').';
       details = 'The reported PHP version is below the fixed releases (8.2.35, 8.3.36, 8.4.27, 8.5.12) or belongs to an end-of-life (EOL) branch without official security fixes.';
-      advice = 'Upgrade PHP immediately to the latest patched point release or disable session.upload_progress.';
+      advice = 'Update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package). Until then: session.upload_progress.enabled=0 in php.ini / FPM pool / server config and restart every worker \u2014 this reduces exposure, it does not make PHP safe.';
       break;
 
     case 'BLOCKED':
@@ -749,13 +787,13 @@ function explainVerdict(f, v) {
     case 'EXPOSED':
       summary = 'The server advertises an unpatched PHP version AND accepts multipart payloads without edge blocking.';
       details = 'Both the version banner check and the multipart reachability test failed. Upload-style request bodies flow directly through to an unpatched PHP engine.';
-      advice = 'High risk: apply edge rules blocking multipart bodies where unneeded, disable session.upload_progress in php.ini, and patch PHP.';
+      advice = 'High risk. Update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package). Until then: session.upload_progress.enabled=0 (php.ini / FPM pool, restart every worker), memory_limit=-1 via php_admin_value, a low post_max_size \u2014 see the advisory box above.';
       break;
 
     case '(PROBABLY) NOT VULNERABLE':
       summary = 'PHP runs on this site, but upload-style requests were refused with 405 before PHP saw them.';
       details = 'POST, PUT and PATCH all got 405/501, and none of those 405 responses carry a PHP sign (no PHP session cookie, no X-Powered-By): the web server or edge refused the method before PHP parsed any body. Other URLs on the same host may still accept uploads.';
-      advice = 'Likely fine at this URL. Still patch PHP or set session.upload_progress.enabled = Off, since other routes may accept POST.';
+      advice = 'Likely fine at this URL, but other routes may accept POST. Update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package).';
       break;
 
     case 'ASSUMED VULNERABLE':
@@ -763,7 +801,7 @@ function explainVerdict(f, v) {
         ? 'PHP itself answered 405 to the upload-style requests, so it had already read the upload.'
         : 'PHP presence is confirmed (session cookie / banner) and multipart payloads reach the application backend.';
       details = 'Requests with multipart content types are accepted without edge-level blocking. Because the specific PHP version cannot be confirmed as patched, the service assumes vulnerability.';
-      advice = 'Verify host PHP version directly on the server (php -v). If unpatched, update PHP or set session.upload_progress.enabled = Off.';
+      advice = 'Check the PHP version on the server (php -v). Update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package). Until then see \u201cIf you cannot update immediately\u201d in the advisory box above.';
       break;
 
     case 'NO PHP DETECTED':
@@ -1248,7 +1286,7 @@ async function loadReleases() {
       $('releasestate').textContent = SERVER_RELEASES.length
         ? 'Patched PHP releases on this service: ' + SERVER_RELEASES.join(', ')
           + ' — per-branch: a version ≥ its branch’s entry counts as patched;'
-          + ' PHP 5/6/7 always count as unpatched (EOL, no fix).'
+          + ' PHP 8.1 and older count as unpatched (no official release; vendor/source backports can\u2019t be seen from outside).'
         : '';
       if (changed) render(lastFacts);   // re-interpret with the fresh list
     }
@@ -1610,22 +1648,6 @@ setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
   }
 })();
 
-// advisory countdown: patched-release list lands at 14:00 UTC, 21 Oct 2026
-(function advisoryCountdown() {
-  const target = Date.UTC(2026, 9, 21, 14, 0, 0);
-  const el = $('advisorycount');
-  const pad = n => (n < 10 ? '0' : '') + n;
-  let t = null;
-  function tick() {
-    const ms = target - Date.now();
-    if (ms <= 0) { el.textContent = 'T-00:00:00 · reached'; if (t) clearInterval(t); return; }
-    const s = Math.floor(ms / 1000);
-    el.textContent = 'T-' + pad(Math.floor(s / 3600)) + ':' +
-                     pad(Math.floor((s % 3600) / 60)) + ':' + pad(s % 60);
-  }
-  tick();
-  t = setInterval(tick, 1000);
-})();
 </script>
 </body>
 </html>

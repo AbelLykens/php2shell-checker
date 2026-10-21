@@ -1575,7 +1575,7 @@ def _php_preview(facts, releases):
     maj = int(parts[0])
     mino = int(parts[1]) if len(parts) > 1 else 0
     if maj < 8:
-        return {"cls": "bad", "text": "PHP " + v + " — EOL branch, no fix coming", "why": via}
+        return {"cls": "bad", "text": "PHP " + v + " — EOL branch, no official fix", "why": via}
     entry = None
     for r in releases:
         pp = r.split(".")
@@ -1586,7 +1586,7 @@ def _php_preview(facts, releases):
     minors = [int(r.split(".")[1]) for r in releases
               if len(r.split(".")) > 1 and int(r.split(".")[0]) == maj]
     if entry is None and minors and mino < min(minors):
-        return {"cls": "bad", "text": "PHP " + v + " — EOL branch, no fix coming", "why": via}
+        return {"cls": "bad", "text": "PHP " + v + " — EOL branch, no official fix", "why": via}
     if entry is None:
         return {"cls": "info", "text": "PHP " + v + " — no data for this branch — unknown", "why": via}
     key = lambda x: tuple(int(y) for y in x.split("."))
