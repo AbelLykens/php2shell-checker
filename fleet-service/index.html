@@ -263,7 +263,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.37";
+const BUILD = "2026-10-21.38";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -602,7 +602,7 @@ function explainVerdict(f, v) {
       break;
 
     case 'ASSUMED VULNERABLE':
-      summary = blk && blk.php405
+      summary = v.blk && v.blk.php405
         ? 'PHP itself answered 405 to the upload-style requests, so it had already read the upload.'
         : 'PHP presence is confirmed (session cookie / banner) and multipart payloads reach the application backend.';
       details = 'Requests with multipart content types are accepted without edge-level blocking. Because the specific PHP version cannot be confirmed as patched, the service assumes vulnerability.';
@@ -665,7 +665,6 @@ function explainVerdict(f, v) {
 /* the expandible Technical info panel: everything we already know, readable */
 function techInfo(f, v) {
   const g = f.get || {};
-  const bad = !!(v && v.cls === 'bad');
   const meta = [];
   if (lastJobId) meta.push('job <b class="mono">' + esc(lastJobId) + '</b>');
   meta.push('level <b>' + esc(f.level) + '</b>');
@@ -678,20 +677,20 @@ function techInfo(f, v) {
   }
   if (f.fetched_at) meta.push('tested ' + utcText(f.fetched_at) + ' (' + agoText(f.fetched_at) + ')');
   meta.push('build ' + BUILD);
-  if (bad) meta.push('<span class="pill pill-bad">red</span> = the response this red verdict is based on');
+  // red pills follow the red CHIPS (banner / vulnerability check), not only
+  // a red overall verdict: a red chip on an UNKNOWN page still shows its proof
+  const blkBad = !!(v && v.blk && v.blk.cls === 'bad');
+  const phpBad = !!(v && v.php && v.php.cls === 'bad');
+  if (blkBad || phpBad) meta.push('<span class="pill pill-bad">red</span> = the response'
+    + ' a red result above is based on');
 
   const rows = [];
   /* response pill: class picked from the FIRST-HOP status (what the edge did),
      text carries the standard reason phrase, e.g. "405 Method Not Allowed".
-     On a red verdict the evidence rows are colored red instead of blue so the
-     technical info matches the verdict: the banner row (UNPATCHED/EXPOSED)
-     and every request that reached the backend (ASSUMED VULNERABLE). */
-  const reached = p => {
-    if (!p || p.error || p.skipped) return false;
-    const s = p.status !== undefined ? p.status : p.first_status;
-    return s >= 200 && s < 400;
-  };
+     Evidence rows (see upEvidence below) are colored red instead of blue so
+     the technical info matches the red chips above it. */
   const statusClass = (s, isEvidence) => {
+    if (isEvidence && !(s >= 300 && s < 400)) return 'bad';
     if (s >= 200 && s < 400) {
       if (s >= 300 && s < 400) return 'done';   // 3xx redirect is neutral/blue, never red
       return isEvidence ? 'bad' : 'done';
@@ -749,17 +748,23 @@ function techInfo(f, v) {
     rows.push('<tr><td><b>' + label + '</b></td><td class="small">' + sent
       + '</td><td class="mono">' + responsePills(p, evidence) + (bits.length ? ' ' + esc(bits.join(' · ')) : '') + fin + '</td></tr>');
   };
-  /* evidence = the exact responses the red verdict is derived from: the
-     banner row for UNPATCHED/EXPOSED, the reached backend requests for
-     ASSUMED VULNERABLE/EXPOSED — not every 2xx on a red page */
-  const blkBad = bad && v.blk && v.blk.cls === 'bad';
-  row('GET', 'no body', g, bad && v.php.cls === 'bad');
+  /* evidence = the exact responses a red chip is derived from: the banner
+     (GET) row for a red PHP banner; for a red vulnerability check only the
+     MULTIPART rows behind it - accepted (2xx, or 307/308 -> 2xx), or a 405
+     that carries a PHP sign - never the plain-form baselines */
+  const upEvidence = p => {
+    if (!blkBad || !p || p.error || p.skipped) return false;
+    const fs = p.first_status !== undefined ? p.first_status : p.status;
+    if (v.blk.php405) return !!(p.php_session_cookie || p.x_powered_by);
+    return (fs >= 200 && fs < 300) || ((fs === 307 || fs === 308) && p.status >= 200 && p.status < 300);
+  };
+  row('GET', 'no body', g, phpBad);
   if (f.level === 'block') {
     for (const [m, lab] of [['post', 'POST'], ['put', 'PUT'], ['patch', 'PATCH']]) {
       row(lab + ' baseline', 'form-urlencoded · field <code>probe</code>',
-          f[m + '_urlencoded'], blkBad && reached(f[m + '_urlencoded']));
+          f[m + '_urlencoded'], false);
       row(lab + ' multipart', 'multipart/form-data · 1 text field',
-          f[m + '_multipart'], blkBad && reached(f[m + '_multipart']));
+          f[m + '_multipart'], upEvidence(f[m + '_multipart']));
     }
   }
   const respHead = 'response' + (endDom ? ' <span class="mono" style="font-weight:400">'
