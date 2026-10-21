@@ -1485,9 +1485,12 @@ def _blk_preview(facts):
                 "text": "no request-body processing (405/501 on "
                         + "+".join(m for m, _ in mps) + ")"
                         + (tail or " — static hosting likely")}
-    through = ["%s → %s" % (m, st(p)) for m, p in mps if 200 <= st(p) < 400]
+    through = [m for m, p in mps if 200 <= st(p) < 400]
     if through:
-        return {"cls": "bad", "text": "multipart reached the backend via " + ", ".join(through)}
+        ms = through[0] if len(through) < 2 \
+            else ", ".join(through[:-1]) + " and " + through[-1]
+        return {"cls": "bad",
+                "text": "NOT BLOCKED — test uploads were accepted on " + ms}
     if 200 <= st(ue) < 400:
         return {"cls": "ok", "text": "active (multipart rejected on "
                 + ("POST+PUT+PATCH" if len(mps) == 3 else "POST") + ", likely before PHP)"}

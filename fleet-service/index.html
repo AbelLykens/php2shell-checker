@@ -250,7 +250,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.26";
+const BUILD = "2026-10-21.27";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -259,6 +259,9 @@ let SERVER_RELEASES = [];   // fetched from GET /api/releases, read-only here
 /* ------------------------------------------------------------- interpretation */
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';'); }
+/* ["POST", "PUT", "PATCH"] -> "POST, PUT and PATCH" */
+function andList(a) { return a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1]; }
+
 function chip(cls, text) { return '<span class="chip ' + cls + '">' + esc(text) + '</span>'; }
 
 function parseVer(v) { return String(v).split('.').map(n => parseInt(n, 10) || 0); }
@@ -344,13 +347,19 @@ function blockDimension(facts) {
     text: 'no request-body processing (405/501 on ' + mps.map(function (e) { return e[0]; }).join('+')
       + ')' + (phpEvidence ? ' — PHP present, version unknown' : ' — static hosting likely') };
   // multipart reached the backend on ANY method (blocking POST alone is not enough)
-  const through = [];
-  for (const [m, p] of mps) {
-    const s = st(p);
-    if (s >= 200 && s < 400) through.push(m + ' → ' + s
-      + (p.redirects ? ' · +' + p.redirects + ' redirect' + (p.redirects > 1 ? 's' : '') : ''));
+  const through = mps.filter(([m, p]) => st(p) >= 200 && st(p) < 400);
+  if (through.length) {
+    // plain-language chip + a short gray "why" (status codes live in the
+    // Technical info table): one shared answer is summarised once, mixed
+    // answers are listed per method
+    const ans = p => st(p) + (STATUS_NAMES[st(p)] ? ' ' + STATUS_NAMES[st(p)] : '')
+      + (p.redirects ? ' and redirected' : '');
+    const answers = through.map(([m, p]) => ans(p));
+    const why = 'server answered ' + (answers.every(a => a === answers[0]) ? answers[0]
+      : through.map(([m, p], i) => m + ' ' + answers[i]).join(', ')) + ' \u2014 see Technical info';
+    return { cls: 'bad', why,
+      text: 'NOT BLOCKED \u2014 test uploads were accepted on ' + andList(through.map(e => e[0])) };
   }
-  if (through.length) return { cls: 'bad', text: 'none (multipart reached the backend via ' + through.join(', ') + ')' };
   // multipart rejected wherever we probed it
   const sue = st(ue);
   if (sue >= 200 && sue < 400) {
@@ -718,7 +727,9 @@ function render(f) {
   document.title = 'php2shell.site \u2014 ' + (shown || 'check');
   $('verdict').innerHTML = chip(v.cls, v.label);
   $('dimphp').innerHTML = chip(v.php.cls, v.php.text);
-  $('dimblk').innerHTML = v.blk ? chip(v.blk.cls, v.blk.text) : '<span class="small">not tested</span>';
+  $('dimblk').innerHTML = v.blk ? chip(v.blk.cls, v.blk.text)
+    + (v.blk.why ? ' <span class="small" style="color:var(--muted)">(' + esc(v.blk.why) + ')</span>' : '')
+    : '<span class="small">not tested</span>';
   $('resdetails').innerHTML = detailsText(f);
   renderTestDate();
   renderRecheck();
