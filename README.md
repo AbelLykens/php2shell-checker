@@ -2,7 +2,7 @@
 
 Defensive tooling around **php2shell** (CVE-2026-109618 / CVE-2026-109619 —
 a PHP `session.upload_progress` use-after-free). Live instance:
-**https://p2s.cheeserobot.org**
+**https://php2shell.site**
 
 ## What's in here
 

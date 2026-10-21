@@ -1153,6 +1153,12 @@ def _og_text_fit(d, text, font, max_w):
     return text
 
 
+def _host_of(u):
+    """Hostname (with port, lowercased) of an absolute http(s) URL, or ''."""
+    m = re.match(r"^https?://([^/?#]+)", str(u or ""), re.I)
+    return m.group(1).lower() if m else ""
+
+
 def _norm_target(raw):
     """Normalize a ?url= value to a full http(s) URL, or None if unusable.
 
@@ -1200,17 +1206,38 @@ def og_png(facts, releases):
         else:
             url = _og_text_fit(d, str(facts.get("url") or ""), f_url, mx)
             d.text((80, 120), url, font=f_url, fill=_OG_C["fg"])
+            # redirect end-domain, same "url -> endhost" line the live header
+            # shows when the probe followed redirects onto another host
+            g0 = facts.get("get") or {}
+            end_h = _host_of(g0.get("final_url"))
+            orig_h = _host_of(facts.get("url"))
+            redir = end_h and orig_h and end_h != orig_h \
+                and (g0.get("redirects") or 0) > 0
             label, cls, php, blk = _verdict_preview(facts, releases)
             chip_max = mx - 30   # text width cap: chip padding + border stay inside the card
-            d.text((80, 214), "VERDICT", font=f_lab, fill=_OG_C["muted"])
-            _og_chip(d, 80, 244, label, _OG_C[cls], f_verdict, chip_max)
-            d.text((80, 322), "PHP banner", font=f_lab, fill=_OG_C["muted"])
-            _og_chip(d, 80, 350, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
-            d.text((80, 422), "block test", font=f_lab, fill=_OG_C["muted"])
-            btxt = blk["text"] if blk else "not tested"
-            _og_chip(d, 80, 450, btxt, _OG_C[blk["cls"] if blk else "info"], f_chip,
-                     chip_max, max_lines=2)
-            foot = OG_H - 92
+            if redir:
+                d.text((80, 168), "\u2192 " + _og_text_fit(d, end_h, f_small, mx - 40),
+                       font=f_small, fill=_OG_C["muted"])
+                # tightened spacing to make room for the extra line
+                d.text((80, 206), "VERDICT", font=f_lab, fill=_OG_C["muted"])
+                _og_chip(d, 80, 232, label, _OG_C[cls], f_verdict, chip_max)
+                d.text((80, 298), "PHP banner", font=f_lab, fill=_OG_C["muted"])
+                _og_chip(d, 80, 324, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
+                d.text((80, 390), "block test", font=f_lab, fill=_OG_C["muted"])
+                btxt = blk["text"] if blk else "not tested"
+                _og_chip(d, 80, 416, btxt, _OG_C[blk["cls"] if blk else "info"], f_chip,
+                         chip_max, max_lines=1)
+                foot = OG_H - 70
+            else:
+                d.text((80, 214), "VERDICT", font=f_lab, fill=_OG_C["muted"])
+                _og_chip(d, 80, 244, label, _OG_C[cls], f_verdict, chip_max)
+                d.text((80, 322), "PHP banner", font=f_lab, fill=_OG_C["muted"])
+                _og_chip(d, 80, 350, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
+                d.text((80, 422), "block test", font=f_lab, fill=_OG_C["muted"])
+                btxt = blk["text"] if blk else "not tested"
+                _og_chip(d, 80, 450, btxt, _OG_C[blk["cls"] if blk else "info"], f_chip,
+                         chip_max, max_lines=2)
+                foot = OG_H - 92
             fa = facts.get("fetched_at")
             when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(fa)) if fa else "?"
             d.text((80, foot), "tested %s · patch & mitigation status for CVE-2026-109618/619"
@@ -1310,7 +1337,7 @@ class Handler(BaseHTTPRequestHandler):
         if sp.path not in ("", "/"):
             u = _norm_target(sp.path.lstrip("/"))
             if u:
-                host = (self.headers.get("Host") or "").strip() or "p2s.cheeserobot.org"
+                host = (self.headers.get("Host") or "").strip() or "php2shell.site"
                 meta = (
                     '<meta property="og:title" content="php2shell check — %s">\n'
                     '  <meta property="og:description" content='

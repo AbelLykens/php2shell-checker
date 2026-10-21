@@ -1,4 +1,4 @@
-# php2shell check — p2s.cheeserobot.org
+# php2shell check — php2shell.site
 
 Public checker for the patch & mitigation status of CVE-2026-109618 / CVE-2026-109619
 (PHP `session.upload_progress` use-after-free; "php2shell"). One URL at a time,
