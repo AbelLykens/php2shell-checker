@@ -1154,9 +1154,18 @@ def _og_text_fit(d, text, font, max_w):
 
 
 def _host_of(u):
-    """Hostname (with port, lowercased) of an absolute http(s) URL, or ''."""
+    """Bare domain (host lowercased, port stripped) of an http(s) URL, or ''.
+
+    Mirrors the client's hostOf()+bareDomain: the OG arrow shows and links
+    the bare domain, and the different-host test is port-insensitive.
+    """
     m = re.match(r"^https?://([^/?#]+)", str(u or ""), re.I)
-    return m.group(1).lower() if m else ""
+    if not m:
+        return ""
+    h = m.group(1).lower()
+    if ":" in h and not h.startswith("["):
+        h = h.split(":", 1)[0]
+    return h
 
 
 def _norm_target(raw):

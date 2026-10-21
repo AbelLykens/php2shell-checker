@@ -73,6 +73,9 @@
   .pill-block { background: var(--ok-bg);   color: var(--ok-fg);   border-color: var(--ok-b); }
   .pill-err   { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-b); }
   .pill-mute  { background: var(--mute-bg); color: var(--mute-fg); border-color: var(--mute-b); }
+  /* red pill: on a red verdict, marks the exact responses the verdict is
+     based on (unpatched banner row / requests that reached the backend) */
+  .pill-bad   { background: var(--bad-bg);  color: var(--bad-fg);  border-color: var(--bad-b); }
   .small { font-size: 12.5px; color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
   code { background: var(--code); padding: 1px 5px; font-size: 12.5px; }
@@ -137,7 +140,7 @@
       <button id="go" type="button">Check</button>
     </div>
     <div class="row">
-      <div class="bar"><i id="progress"></i></div>
+      <div class="bar" id="bar" hidden><i id="progress"></i></div>
       <span class="spin" id="spinner" hidden></span><span class="small mono" id="progtext"></span>
     </div>
     <div class="small" id="releasestate" style="margin-top:8px"></div>
@@ -217,7 +220,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.12";
+const BUILD = "2026-10-21.13";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -416,8 +419,9 @@ function renderRecheck() {
 setInterval(function () { renderTestDate(); renderRecheck(); }, 1000);
 
 /* the expandible Technical info panel: everything we already know, readable */
-function techInfo(f) {
+function techInfo(f, v) {
   const g = f.get || {};
+  const bad = !!(v && v.cls === 'bad');
   const meta = [];
   if (lastJobId) meta.push('job <b class="mono">' + esc(lastJobId) + '</b>');
   meta.push('level <b>' + esc(f.level) + '</b>');
@@ -430,23 +434,32 @@ function techInfo(f) {
   }
   if (f.fetched_at) meta.push('tested ' + utcText(f.fetched_at) + ' (' + agoText(f.fetched_at) + ')');
   meta.push('build ' + BUILD);
+  if (bad) meta.push('<span class="pill pill-bad">red</span> = the response this red verdict is based on');
 
   const rows = [];
   /* response pill: class picked from the FIRST-HOP status (what the edge did),
-     text carries the standard reason phrase, e.g. "405 Method Not Allowed" */
-  const pill = p => {
+     text carries the standard reason phrase, e.g. "405 Method Not Allowed".
+     On a red verdict the evidence rows are colored red instead of blue so the
+     technical info matches the verdict: the banner row (UNPATCHED/EXPOSED)
+     and every request that reached the backend (ASSUMED VULNERABLE). */
+  const reached = p => {
+    if (!p || p.error || p.skipped) return false;
+    const s = p.first_status !== undefined ? p.first_status : p.status;
+    return s >= 200 && s < 400;
+  };
+  const pill = (p, evidence) => {
     let c = 'mute', t = 'SKIP';
     if (p.error) { t = 'ERR'; }
     else if (!p.skipped) {
       const s = p.first_status !== undefined ? p.first_status : p.status;
       t = String(s) + (STATUS_NAMES[s] ? ' ' + STATUS_NAMES[s] : '');
-      if (s >= 200 && s < 400) c = 'done';
+      if (s >= 200 && s < 400) c = evidence ? 'bad' : 'done';
       else if (s >= 400 && s < 500) c = 'block';
       else if (s >= 500) c = 'err';
     }
     return '<span class="pill pill-' + c + '">' + t + '</span>';
   };
-  const row = (label, sent, p) => {
+  const row = (label, sent, p, evidence) => {
     if (!p) return;
     const bits = [];
     if (p.error) bits.push(p.error);
@@ -460,13 +473,19 @@ function techInfo(f) {
     let fin = '';
     if (p.redirects && p.final_url) fin = '<div class="small">' + esc(p.final_url) + '</div>';
     rows.push('<tr><td><b>' + label + '</b></td><td class="small">' + sent
-      + '</td><td class="mono">' + pill(p) + (bits.length ? ' ' + esc(bits.join(' · ')) : '') + fin + '</td></tr>');
+      + '</td><td class="mono">' + pill(p, evidence) + (bits.length ? ' ' + esc(bits.join(' · ')) : '') + fin + '</td></tr>');
   };
-  row('GET', 'no body', g);
+  /* evidence = the exact responses the red verdict is derived from: the
+     banner row for UNPATCHED/EXPOSED, the reached backend requests for
+     ASSUMED VULNERABLE/EXPOSED — not every 2xx on a red page */
+  const blkBad = bad && v.blk && v.blk.cls === 'bad';
+  row('GET', 'no body', g, bad && v.php.cls === 'bad');
   if (f.level === 'block') {
     for (const [m, lab] of [['post', 'POST'], ['put', 'PUT'], ['patch', 'PATCH']]) {
-      row(lab + ' baseline', 'form-urlencoded · field <code>probe</code>', f[m + '_urlencoded']);
-      row(lab + ' multipart', 'multipart/form-data · 1 text field', f[m + '_multipart']);
+      row(lab + ' baseline', 'form-urlencoded · field <code>probe</code>',
+          f[m + '_urlencoded'], blkBad && reached(f[m + '_urlencoded']));
+      row(lab + ' multipart', 'multipart/form-data · 1 text field',
+          f[m + '_multipart'], blkBad && reached(f[m + '_multipart']));
     }
   }
   const hdrs = [];
@@ -525,8 +544,10 @@ function render(f) {
   let redirHtml = '';
   try {
     const g0 = f.get || {};
-    const endHost = hostOf(g0.final_url);
-    const origHost = hostOf(f.url);
+    // strip to the bare domain: display, share link and the different-host
+    // test are all port-insensitive (share links are bare domains)
+    const endHost = bareDomain(hostOf(g0.final_url));
+    const origHost = bareDomain(hostOf(f.url));
     if (endHost && origHost && endHost !== origHost && (g0.redirects | 0) > 0) {
       redirHtml = ' <span class="redir">→ <a class="selflink" href="/'
         + niceParam(endHost) + '" title="redirected ' + (g0.redirects | 0)
@@ -542,7 +563,7 @@ function render(f) {
   $('resdetails').innerHTML = detailsText(f);
   renderTestDate();
   renderRecheck();
-  $('tech').innerHTML = techInfo(f);
+  $('tech').innerHTML = techInfo(f, v);
   $('raw').textContent = JSON.stringify(f, null, 2);
   $('techcard').hidden = false;
 }
@@ -673,6 +694,12 @@ function hostOf(u) {
   return m ? m[1].toLowerCase() : '';
 }
 
+/* host minus port: the redir arrow and its share link show the bare domain */
+function bareDomain(h) {
+  h = String(h || '');
+  return h.indexOf(':') > -1 && h[0] !== '[' ? h.slice(0, h.indexOf(':')) : h;
+}
+
 /* verdict-colored favicon: green dot for protective results, red for bad
    ones; the neutral gray default lives in the static <head> link */
 const FAVICON = {
@@ -771,6 +798,7 @@ async function run(force, urlOverride) {
   controller = new AbortController();
   $('go').disabled = true;
   $('recheck').disabled = true;
+  $('bar').hidden = false;   // progress bar only exists while a check runs
   $('progress').style.width = '0%';
   $('progtext').textContent = 'proof of work…';
   try {
@@ -799,6 +827,7 @@ async function run(force, urlOverride) {
   } finally {
     running = false; controller = null;
     spinner(false);
+    $('bar').hidden = true;   // done (or failed): no dangling progress bar
     $('go').disabled = false;
     renderRecheck();
     setTimeout(prewarmPow, 1500);   // re-arm for the next check
