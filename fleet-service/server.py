@@ -108,6 +108,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import socket
 import sqlite3
 import ssl
@@ -836,6 +837,82 @@ class ServiceState(object):
                     else os.path.dirname(os.path.abspath(__file__)))
             og_dir = os.path.join(base, "og-cache")
         self.og = None if og_dir == "none" else _OgCache(og_dir)
+        # Secret salt for generating/verifying finding access keys
+        # (16-char alphanumeric token appended to share URL for instant retrieval)
+        self.salt = None
+        if self.store is not None:
+            self.salt = self.store.get_setting("secret_salt")
+            if not self.salt:
+                self.salt = secrets.token_hex(32)
+                self.store.set_setting("secret_salt", self.salt)
+        if not self.salt:
+            self.salt = secrets.token_hex(32)
+
+    def finding_key(self, domain):
+        """16 alphanumeric characters unique to domain + server's secret salt."""
+        d = domain.lower().strip()
+        return hmac.new(self.salt.encode("utf-8"), d.encode("utf-8"),
+                        hashlib.sha256).hexdigest()[:16]
+
+    def verify_finding_key(self, domain, key):
+        """Verify whether the key matches domain + secret salt."""
+        if not key or len(key) != 16 or not key.isalnum():
+            return False
+        expected = self.finding_key(domain)
+        return hmac.compare_digest(expected, key.lower())
+
+    def get_finding_by_key(self, domain, key):
+        """If key matches domain + salt, return cached result immediately."""
+        if not self.verify_finding_key(domain, key):
+            return None
+        d = domain.lower().strip()
+        facts = None
+        # 1. Hot memory cache
+        with self.cache_lock:
+            for (k_url, k_lvl), (ts, val) in self.cache.items():
+                if k_lvl == "block" and _host_of(k_url) == d:
+                    facts = dict(val)
+                    facts["cached"] = True
+                    facts["fetched_at"] = ts
+                    break
+        # 2. Memcached
+        if facts is None and self.mc is not None:
+            cands = ["https://" + d, "https://" + d + "/", "http://" + d, "http://" + d + "/"]
+            for cand in cands:
+                try:
+                    mc_res = self.mc.get("p2s:res:" + hashlib.sha256(
+                        ("%s|block" % cand).encode("utf-8")).hexdigest())
+                    if mc_res:
+                        facts = json.loads(mc_res.decode("utf-8"))
+                        facts["cached"] = True
+                        break
+                except Exception:
+                    pass
+        # 3. Persistent SQLite store
+        if facts is None and self.store is not None:
+            cands = ["https://" + d, "https://" + d + "/", "http://" + d, "http://" + d + "/"]
+            for cand in cands:
+                facts = self.store.get_fresh(cand, "block", 30 * 86400)
+                if facts is not None:
+                    break
+            if facts is None:
+                # also search store by host prefix if port was in url
+                try:
+                    row = self.store._conn().execute(
+                        "SELECT fetched_at, facts_json FROM results WHERE level = 'block' "
+                        "AND (url LIKE ? OR url LIKE ?) ORDER BY fetched_at DESC LIMIT 1",
+                        ("http://" + d + ":%", "https://" + d + ":%"),
+                    ).fetchone()
+                    if row:
+                        fetched_at, blob = row
+                        facts = json.loads(blob)
+                        facts["cached"] = True
+                        facts["fetched_at"] = fetched_at
+                except Exception:
+                    pass
+        if facts is not None:
+            facts["finding_key"] = self.finding_key(d)
+        return facts
 
     # -- proof of work ------------------------------------------------------
     # Hashcash-style: client finds nonce so that SHA-256("<id>:<nonce>") has
@@ -988,7 +1065,7 @@ class ServiceState(object):
                 key = (url, job.level)
                 facts = None
                 # L1: hot in-memory cache (same-run dedupe). force bypasses
-                # BOTH cache layers - a re-check must really re-probe.
+                # ALL cache layers - a re-check must really re-probe.
                 if not job.force:
                     with self.cache_lock:
                         hit = self.cache.get(key)
@@ -996,7 +1073,17 @@ class ServiceState(object):
                             facts = dict(hit[1])
                             facts["cached"] = True
                             facts["fetched_at"] = hit[0]
-                # L2: persistent store (survives restarts; skipped on force)
+                # L2: memcached results JSON (fast out-of-process cache)
+                if facts is None and not job.force and self.mc is not None:
+                    try:
+                        mc_res = self.mc.get("p2s:res:" + hashlib.sha256(
+                            ("%s|%s" % (url, job.level)).encode("utf-8")).hexdigest())
+                        if mc_res:
+                            facts = json.loads(mc_res.decode("utf-8"))
+                            facts["cached"] = True
+                    except Exception:
+                        facts = None
+                # L3: persistent store (survives restarts; skipped on force)
                 if facts is None and not job.force and self.store is not None:
                     try:
                         facts = self.store.get_fresh(
@@ -1015,8 +1102,20 @@ class ServiceState(object):
                         with self.stats_lock:
                             self.in_flight -= 1
                     facts["fetched_at"] = time.time()  # client shows the test date
+                    # Attach secret finding_key for finished checks
+                    host = _host_of(url)
+                    if host:
+                        facts["finding_key"] = self.finding_key(host)
                     with self.cache_lock:
                         self.cache[key] = (time.time(), facts)
+                    if self.mc is not None:
+                        try:
+                            self.mc.set("p2s:res:" + hashlib.sha256(
+                                ("%s|%s" % (url, job.level)).encode("utf-8")).hexdigest(),
+                                json.dumps(facts),
+                                ttl=int(self.cfg["cache_ttl"]))
+                        except Exception:
+                            pass
                     if self.store is not None:
                         try:
                             self.store.put_result(url, job.level, facts)
@@ -1142,7 +1241,18 @@ class ServiceState(object):
         if hit is not None:
             return hit
         facts = None
-        if self.store is not None:
+        if self.mc is not None:
+            for cand in dict.fromkeys((url, url.rstrip("/"), url.rstrip("/") + "/")):
+                try:
+                    mc_res = self.mc.get("p2s:res:" + hashlib.sha256(
+                        ("%s|block" % cand).encode("utf-8")).hexdigest())
+                    if mc_res:
+                        facts = json.loads(mc_res.decode("utf-8"))
+                        facts.pop("cached", None)
+                        break
+                except Exception:
+                    pass
+        if facts is None and self.store is not None:
             # the store keys by exactly what was scanned; try both slash forms
             for cand in dict.fromkeys((url, url.rstrip("/"), url.rstrip("/") + "/")):
                 facts = self.store.get_fresh(cand, "block", 30 * 86400)
@@ -1167,6 +1277,12 @@ class ServiceState(object):
         total = len(job.urls)
         done = len(results)
         state = "done" if done >= total else ("running" if done else "queued")
+        if state == "done":
+            for u, f in results.items():
+                if isinstance(f, dict) and "finding_key" not in f:
+                    host = _host_of(u)
+                    if host:
+                        f["finding_key"] = self.finding_key(host)
         # queue position: how many scan items submitted BEFORE this job are
         # still waiting in the queue (in-flight work is reported separately).
         # Fast path: the memcached metrics bus publishes positions every
@@ -1671,7 +1787,15 @@ class Handler(BaseHTTPRequestHandler):
         # permanent 301 to the path form; /api/og keeps its url= parameter.
         sp = urllib.parse.urlsplit(self.path)
         if sp.path not in ("", "/"):
-            u = _norm_target(sp.path.lstrip("/"))
+            raw_path = sp.path.lstrip("/").strip("/")
+            parts = [p for p in raw_path.split("/") if p]
+            # Check if this is /<domain>/<KEY16>
+            cand_domain = parts[0] if parts else ""
+            cand_key = parts[1] if len(parts) >= 2 else ""
+            if len(cand_key) == 16 and cand_key.isalnum() and self.state.verify_finding_key(cand_domain, cand_key):
+                u = _norm_target(cand_domain)
+            else:
+                u = _norm_target(sp.path.lstrip("/"))
             if u:
                 host = (self.headers.get("Host") or "").strip() or "php2shell.site"
                 meta = (
@@ -1761,6 +1885,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(png)
                 return
+            if path == "/api/finding":
+                # Instant key-authenticated finding lookup without PoW
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                domain = (q.get("domain") or [""])[0]
+                key = (q.get("key") or [""])[0]
+                if not domain or not key:
+                    return self._json({"error": "domain and key required"}, 400)
+                facts = self.state.get_finding_by_key(domain, key)
+                if facts is None:
+                    return self._json({"error": "invalid finding key or expired result"}, 404)
+                return self._json({"domain": domain, "key": key, "facts": facts})
             if path == "/api/pow":
                 # issue a one-time PoW challenge; ?for=scan|status picks the
                 # difficulty. Cheap to issue, worthless without solving, so
