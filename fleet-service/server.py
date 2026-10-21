@@ -1064,32 +1064,40 @@ class ServiceState(object):
                     continue
                 key = (url, job.level)
                 facts = None
-                # L1: hot in-memory cache (same-run dedupe). force bypasses
-                # ALL cache layers - a re-check must really re-probe.
-                if not job.force:
+                # Check cache only if cache_ttl > 0 and not force
+                if not job.force and self.cfg["cache_ttl"] > 0:
+                    # L1: hot in-memory cache (same-run dedupe).
                     with self.cache_lock:
                         hit = self.cache.get(key)
                         if hit and time.time() - hit[0] < self.cfg["cache_ttl"]:
                             facts = dict(hit[1])
                             facts["cached"] = True
                             facts["fetched_at"] = hit[0]
-                # L2: memcached results JSON (fast out-of-process cache)
-                if facts is None and not job.force and self.mc is not None:
-                    try:
-                        mc_res = self.mc.get("p2s:res:" + hashlib.sha256(
-                            ("%s|%s" % (url, job.level)).encode("utf-8")).hexdigest())
-                        if mc_res:
-                            facts = json.loads(mc_res.decode("utf-8"))
-                            facts["cached"] = True
-                    except Exception:
-                        facts = None
-                # L3: persistent store (survives restarts; skipped on force)
-                if facts is None and not job.force and self.store is not None:
-                    try:
-                        facts = self.store.get_fresh(
-                            url, job.level, self.cfg["cache_ttl"])
-                    except Exception:
-                        facts = None  # persistence is best-effort
+                    # L2: memcached results JSON (fast out-of-process cache)
+                    if facts is None and self.mc is not None:
+                        try:
+                            mc_res = self.mc.get("p2s:res:" + hashlib.sha256(
+                                ("%s|%s" % (url, job.level)).encode("utf-8")).hexdigest())
+                            if mc_res:
+                                facts = json.loads(mc_res.decode("utf-8"))
+                                facts["cached"] = True
+                        except Exception:
+                            facts = None
+                    # L3: persistent store (survives restarts; skipped on force)
+                    if facts is None and self.store is not None:
+                        try:
+                            facts = self.store.get_fresh(
+                                url, job.level, self.cfg["cache_ttl"])
+                        except Exception:
+                            facts = None  # persistence is best-effort
+
+                    # If we got a cache hit, ensure it still satisfies current SSRF/allowlist rules
+                    if facts is not None and not self.cfg["allow_private"]:
+                        try:
+                            _guard_url(url, self.cfg, self.allowlist)
+                        except ProbeError:
+                            facts = None
+
                 if facts is None:
                     with self.stats_lock:
                         self.in_flight += 1
@@ -1106,21 +1114,22 @@ class ServiceState(object):
                     host = _host_of(url)
                     if host:
                         facts["finding_key"] = self.finding_key(host)
-                    with self.cache_lock:
-                        self.cache[key] = (time.time(), facts)
-                    if self.mc is not None:
-                        try:
-                            self.mc.set("p2s:res:" + hashlib.sha256(
-                                ("%s|%s" % (url, job.level)).encode("utf-8")).hexdigest(),
-                                json.dumps(facts),
-                                ttl=int(self.cfg["cache_ttl"]))
-                        except Exception:
-                            pass
-                    if self.store is not None:
-                        try:
-                            self.store.put_result(url, job.level, facts)
-                        except Exception:
-                            pass
+                    if self.cfg["cache_ttl"] > 0:
+                        with self.cache_lock:
+                            self.cache[key] = (time.time(), facts)
+                        if self.mc is not None:
+                            try:
+                                self.mc.set("p2s:res:" + hashlib.sha256(
+                                    ("%s|%s" % (url, job.level)).encode("utf-8")).hexdigest(),
+                                    json.dumps(facts),
+                                    ttl=int(self.cfg["cache_ttl"]))
+                            except Exception:
+                                pass
+                        if self.store is not None:
+                            try:
+                                self.store.put_result(url, job.level, facts)
+                            except Exception:
+                                pass
                 with job.lock:
                     job.results[url] = facts
                     finished = len(job.results) >= len(job.urls)
@@ -1500,7 +1509,9 @@ def _verdict_preview(facts, releases):
     if blk and blk["cls"] == "ok":
         return "BLOCKED", "ok", php, blk
     if blk and blk["cls"] == "bad":
-        return "ASSUMED VULNERABLE", "bad", php, blk
+        if g.get("php_session_cookie") or g.get("x_powered_by"):
+            return "ASSUMED VULNERABLE", "bad", php, blk
+        return "UNKNOWN", "info", php, blk
     if (blk and blk.get("static") and php["cls"] == "info"
             and not g.get("php_session_cookie") and not g.get("x_powered_by")):
         return "NO PHP DETECTED", "ok", php, blk

@@ -170,6 +170,13 @@
         <div class="small mono" id="resdetails" style="margin-top:6px"></div>
       </details>
       <div id="tech" style="margin-top:10px"></div>
+      <details id="diycard" style="margin-top:8px">
+        <summary class="small">reproduce via curl (bash script)</summary>
+        <div style="margin-top:6px">
+          <button id="copycurl" type="button" class="btn small" style="margin-bottom:6px;padding:2px 8px;font-size:12px;cursor:pointer">Copy script</button>
+          <pre id="curlscript" class="mono small" style="overflow-x:auto;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;user-select:all"></pre>
+        </div>
+      </details>
       <details style="margin-top:8px">
         <summary class="small">raw JSON (exactly as returned by the server)</summary>
         <pre id="raw"></pre>
@@ -227,7 +234,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.18";
+const BUILD = "2026-10-21.19";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -600,6 +607,7 @@ function render(f) {
   $('resdetails').innerHTML = detailsText(f);
   renderTestDate();
   renderRecheck();
+  renderDiyScript();
   $('tech').innerHTML = techInfo(f, v);
   $('raw').textContent = JSON.stringify(f, null, 2);
   $('techcard').hidden = false;
@@ -1014,6 +1022,60 @@ $('themebtn').addEventListener('click', () => {
 
 /* ------------------------------------------------------------------ init */
 
+function renderDiyScript() {
+  const raw = String($('url').value || '').trim();
+  const clean = stripUrlParts(raw) || 'example.com';
+  const script = `#!/usr/bin/env bash
+# php2shell (CVE-2026-109618/619) inert self-check script
+# 7 safe probes: checks PHP banner & multipart reachability
+TARGET="${clean}"
+URL="https://\${TARGET}/"
+
+echo "=== Probing \${URL} ==="
+
+echo "[1/7] GET (headers):"
+curl -sS -D - -o /dev/null -k -L --max-redirs 3 "\${URL}" | grep -iE '^(HTTP/|Server:|X-Powered-By:|Set-Cookie:.*PHPSESSID)'
+
+for M in POST PUT PATCH; do
+  echo -n "[$M urlencoded] status: "
+  curl -sS -o /dev/null -w "%{http_code}\\n" -k -L --max-redirs 3 \\
+    -X "$M" \\
+    -H "Content-Type: application/x-www-form-urlencoded" \\
+    -d "probe=php2shell-block-test" "\${URL}"
+
+  echo -n "[$M multipart ] status: "
+  curl -sS -o /dev/null -w "%{http_code}\\n" -k -L --max-redirs 3 \\
+    -X "$M" \\
+    -F "probe=php2shell-block-test" "\${URL}"
+done
+`;
+  if ($('curlscript')) $('curlscript').textContent = script;
+}
+
+if ($('copycurl')) {
+  $('copycurl').addEventListener('click', async () => {
+    const code = $('curlscript').textContent;
+    try {
+      await navigator.clipboard.writeText(code);
+      $('copycurl').textContent = 'Copied!';
+      setTimeout(() => { $('copycurl').textContent = 'Copy script'; }, 2000);
+    } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = code;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        $('copycurl').textContent = 'Copied!';
+        setTimeout(() => { $('copycurl').textContent = 'Copy script'; }, 2000);
+      } catch (_e) {}
+      document.body.removeChild(ta);
+    }
+  });
+}
+
 $('buildline').textContent = 'build ' + BUILD;
 $('go').addEventListener('click', () => {
   // If the button is in "Re-check" mode for the current target, run with force=true
@@ -1021,7 +1083,11 @@ $('go').addEventListener('click', () => {
   return run(isRecheck);
 });
 $('url').addEventListener('keydown', e => { if (e.key === 'Enter') run(false); });
-$('url').addEventListener('input', () => renderRecheck());
+$('url').addEventListener('input', () => {
+  renderRecheck();
+  renderDiyScript();
+});
+renderDiyScript();
 loadReleases();
 setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
 
