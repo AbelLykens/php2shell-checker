@@ -1745,7 +1745,7 @@ def _verdict_preview(facts, releases):
         return ("PATCHED" if php["cls"] == "ok"
                 else "(PROBABLY) NOT VULNERABLE"), "ok", php, blk
     if blk and blk["cls"] == "ok":
-        return "BLOCKED", "ok", php, blk
+        return ("PATCHED" if php["cls"] == "ok" else "BLOCKED"), "ok", php, blk
     if blk and blk["cls"] == "bad":
         if php_seen or blk.get("php405"):
             return "ASSUMED VULNERABLE", "bad", php, blk
@@ -1757,7 +1757,8 @@ def _verdict_preview(facts, releases):
     return "UNKNOWN", "warn", php, blk
 
 
-_VERDICT_SHOWN = {"BLOCKED": "(PROBABLY) NOT VULNERABLE",
+_VERDICT_SHOWN = {"BLOCKED": "MITIGATED — UPDATE STILL NEEDED",
+                  "(PROBABLY) NOT VULNERABLE": "MITIGATED — UPDATE STILL NEEDED",
                   "PATCHED": "NOT VULNERABLE (PATCHED)", "EXPOSED": "VULNERABLE",
                   "UNPATCHED": "VULNERABLE (UNPATCHED PHP)",
                   "TEST BLOCKED": "COULD NOT TEST", "UNKNOWN": "INCONCLUSIVE"}

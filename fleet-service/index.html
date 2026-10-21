@@ -252,9 +252,9 @@
           <strong>How to interpret the output:</strong>
           <ul style="margin:6px 0 0;padding-left:18px;line-height:1.6">
             <li><b>X-Powered-By / Server header</b>: Look for PHP version info (fixed releases: 8.2.35+, 8.3.36+, 8.4.27+, 8.5.12+).</li>
-            <li><b>Multipart 403 / 406 while urlencoded succeeds (200/302/405)</b>: Multipart is blocked by WAF/CDN/web server rule before PHP processes it (<b>(PROBABLY) NOT VULNERABLE</b>).</li>
+            <li><b>Multipart 403 / 406 while urlencoded succeeds (200/302/405)</b>: Multipart is blocked by WAF/CDN/web server rule before PHP processes it (<b>MITIGATED &mdash; UPDATE STILL NEEDED</b>).</li>
             <li><b>Multipart 200 / 3xx</b>: Multipart request body reaches the application (<b>ASSUMED VULNERABLE</b> if unpatched).</li>
-            <li><b>All 405 Method Not Allowed</b>: if the 405 responses carry no PHP signs (no PHPSESSID cookie, no X-Powered-By) the server refused before PHP (<b>(PROBABLY) NOT VULNERABLE</b>, or <b>NO PHP DETECTED</b> without any PHP indicators). A 405 that sets a PHP session cookie came from PHP itself, after it read the upload (<b>ASSUMED VULNERABLE</b>).</li>
+            <li><b>All 405 Method Not Allowed</b>: if the 405 responses carry no PHP signs (no PHPSESSID cookie, no X-Powered-By) the server refused before PHP (<b>MITIGATED &mdash; UPDATE STILL NEEDED</b>, or <b>NO PHP DETECTED</b> without any PHP indicators). A 405 that sets a PHP session cookie came from PHP itself, after it read the upload (<b>ASSUMED VULNERABLE</b>).</li>
           </ul>
         </div>
       </div>
@@ -302,7 +302,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.48";
+const BUILD = "2026-10-21.49";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -616,7 +616,8 @@ function blockDimension(facts) {
 /* what the visitor reads: outcome-first wording. Internal labels stay
    stable (logic, tests and the server mirror key on them). */
 const VERDICT_SHOWN = {
-  'BLOCKED': '(PROBABLY) NOT VULNERABLE',
+  'BLOCKED': 'MITIGATED — UPDATE STILL NEEDED',
+  '(PROBABLY) NOT VULNERABLE': 'MITIGATED — UPDATE STILL NEEDED',
   'PATCHED': 'NOT VULNERABLE (PATCHED)',
   'EXPOSED': 'VULNERABLE',
   'UNPATCHED': 'VULNERABLE (UNPATCHED PHP)',
@@ -641,7 +642,7 @@ function interpret(facts) {
   else if (php.cls === 'bad' && blk && blk.cls === 'bad') { cls = 'bad'; label = 'EXPOSED'; }
   else if (php.cls === 'bad') { cls = 'bad'; label = 'UNPATCHED'; }
   else if (blk && blk.notVuln) { cls = 'ok'; label = php.cls === 'ok' ? 'PATCHED' : '(PROBABLY) NOT VULNERABLE'; }
-  else if (blk && blk.cls === 'ok') { cls = 'ok'; label = 'BLOCKED'; }
+  else if (blk && blk.cls === 'ok') { cls = 'ok'; label = php.cls === 'ok' ? 'PATCHED' : 'BLOCKED'; }
   // multipart-family requests flow through: with PHP signs, assume
   // vulnerable until a patched PHP version is verified; without, unknown
   else if (blk && blk.cls === 'bad') {
@@ -779,9 +780,9 @@ function explainVerdict(f, v) {
       break;
 
     case 'BLOCKED':
-      summary = 'Multipart request bodies are rejected by an edge firewall / CDN / proxy before reaching PHP.';
-      details = 'Form-urlencoded requests were received normally, but multipart/form-data payloads were blocked (e.g. 403 Forbidden). This edge mitigation prevents upload-progress parsing.';
-      advice = 'Keep the WAF/CDN rule active and ensure origin servers cannot be accessed directly via origin IP bypass.';
+      summary = 'Mitigated: upload-style requests are stopped by a firewall / CDN / proxy before they reach PHP \u2014 PHP itself still needs the update.';
+      details = 'Plain form posts got through, but multipart/form-data uploads were refused (e.g. 403). That blocks the confirmed upload-progress attack path. Per php.net, mitigations reduce exposure but do not make PHP safe: CVE-2026-109618 can also be reached through other request parsing (plain form bodies, field counts), and CVE-2026-109619 through other paths than upload progress.';
+      advice = 'Update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package). Keep the WAF/CDN rule meanwhile and make sure the origin is not reachable directly, bypassing it.';
       break;
 
     case 'EXPOSED':
@@ -791,9 +792,9 @@ function explainVerdict(f, v) {
       break;
 
     case '(PROBABLY) NOT VULNERABLE':
-      summary = 'PHP runs on this site, but upload-style requests were refused with 405 before PHP saw them.';
-      details = 'POST, PUT and PATCH all got 405/501, and none of those 405 responses carry a PHP sign (no PHP session cookie, no X-Powered-By): the web server or edge refused the method before PHP parsed any body. Other URLs on the same host may still accept uploads.';
-      advice = 'Likely fine at this URL, but other routes may accept POST. Update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package).';
+      summary = 'Mitigated at this URL: PHP runs on the site, but POST/PUT/PATCH were refused with 405 before PHP saw them \u2014 PHP itself still needs the update.';
+      details = 'POST, PUT and PATCH all got 405/501 and none of those answers carry a PHP sign (no PHP session cookie, no X-Powered-By): the web server or edge refused the method before PHP parsed any body. Other URLs on the same host may still accept requests with a body, and per php.net mitigations do not make PHP safe.';
+      advice = 'Update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package).';
       break;
 
     case 'ASSUMED VULNERABLE':
