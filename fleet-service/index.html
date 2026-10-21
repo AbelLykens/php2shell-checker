@@ -175,7 +175,7 @@
     </div>
     <div class="small mono" id="testdate" hidden style="margin-top:4px"></div>
     <div class="resrow"><span class="dimlabel">verdict</span> <span id="verdict"></span></div>
-    <div class="resrow"><span class="dimlabel">PHP banner</span> <span id="dimphp"></span></div>
+    <div class="resrow"><span class="dimlabel">PHP detection</span> <span id="dimphp"></span></div>
     <div class="resrow"><span class="dimlabel">vulnerability check</span> <span id="dimblk"></span></div>
     <details id="techcard" hidden>
       <summary>Technical info</summary>
@@ -224,7 +224,7 @@
   </div>
 
   <div class="foot">
-    <p><strong>How to read.</strong> <b>PHP banner</b>: <code>X-Powered-By</code> PHP version vs
+    <p><strong>How to read.</strong> <b>PHP detection</b>: an <code>X-Powered-By: PHP/…</code> header (only PHP itself counts, not Next.js/Express/KPHP) or a PHP session cookie on any response; the version is compared with
     the patched-release list shown above the result (kept server-side by the operator). Absent
     banners (CDN stripping, <code>expose_php=Off</code>) report <i>unknown</i> — a missing banner
     is not safety. <b>Block test</b>: an upload-style (multipart) request vs a normal form POST,
@@ -264,7 +264,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.41";
+const BUILD = "2026-10-21.42";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -305,27 +305,73 @@ function versionStatus(v) {
   if (cmpVer(v, entry) >= 0) return { cls: 'ok', text: v + ' ≥ ' + entry };
   return { cls: 'bad', text: v + ' < ' + entry };
 }
-function parsePhp(facts) {
-  const m = /PHP\/(\d+(?:\.\d+)+)/i.exec(String((facts.get || {}).x_powered_by || ''));
-  return m ? m[1] : null;
+/* ---- PHP detection: WHERE and HOW PHP showed itself -------------------
+   X-Powered-By counts only when it names PHP itself ("PHP/8.3.4"); Next.js,
+   Express, ASP.NET or KPHP (VK's compiler, not the PHP engine) do not. A
+   PHP session cookie (PHPSESSID / laravel_session) counts on any response.
+   Responses that ended on ANOTHER site after a redirect don't count. */
+function isPhpXpb(v) { return /(^|[^a-z])php(\/|\s|;|,|$)/i.test(String(v || '')); }
+const PROBE_LABELS = [['get', 'GET'], ['post_urlencoded', 'POST baseline'], ['post_multipart', 'POST multipart'],
+  ['put_urlencoded', 'PUT baseline'], ['put_multipart', 'PUT multipart'],
+  ['patch_urlencoded', 'PATCH baseline'], ['patch_multipart', 'PATCH multipart']];
+/* registrable domain, roughly: last 2 labels (3 for co.uk-style) */
+function siteOf(h) {
+  const p = String(h || '').toLowerCase().split('.').filter(Boolean);
+  if (p.length < 3) return p.join('.');
+  const tld = p[p.length - 1], sl = p[p.length - 2];
+  return (tld.length === 2 && /^(co|com|org|net|gov|ac|edu|ne|or)$/.test(sl))
+    ? p.slice(-3).join('.') : p.slice(-2).join('.');
+}
+function phpSigns(facts) {
+  const home = siteOf(bareDomain(hostOf(facts.url)));
+  const out = [];
+  for (const [k, lab] of PROBE_LABELS) {
+    const p = facts[k];
+    if (!p || p.error || p.skipped) continue;
+    if ((p.redirects | 0) > 0 && p.final_url && siteOf(bareDomain(hostOf(p.final_url))) !== home) continue;
+    if (isPhpXpb(p.x_powered_by)) out.push({ key: k, where: lab, what: 'X-Powered-By: ' + p.x_powered_by });
+    if (p.php_session_cookie) out.push({ key: k, where: lab, what: 'PHP session cookie' });
+  }
+  return out;
+}
+/* "PHP session cookie (GET, POST multipart); X-Powered-By: PHP/8.3.4 (GET)" */
+function signsText(signs) {
+  const by = new Map();
+  for (const x of signs) { if (!by.has(x.what)) by.set(x.what, []); by.get(x.what).push(x.where); }
+  return Array.from(by, ([what, w]) => what + ' (' + w.join(', ') + ')').join('; ');
+}
+function parsePhp(signs) {
+  for (const x of signs) {
+    const m = /(?:^|[^a-z])PHP\/(\d+(?:\.\d+)+)/i.exec(x.what);
+    if (m) return m[1];
+  }
+  return null;
 }
 
 function phpDimension(facts) {
   const g = facts.get || {};
   if (g.error) return { cls: 'info', text: 'no response (' + g.error + ')' };
-  const v = parsePhp(facts);
-  if (!v) {
-    // a PHP session cookie proves the backend is PHP even with the banner stripped
-    const seen = g.php_session_cookie ? 'PHP app (session cookie), ' : '';
-    return { cls: 'info', text: seen + 'version hidden — unknown (HTTP ' + (g.status || '?') + ')' };
+  const signs = phpSigns(facts);
+  const v = parsePhp(signs);
+  if (v) {
+    const r = versionStatus(v);
+    return { cls: r.cls, text: 'PHP ' + r.text, why: 'detected via ' + signsText(signs) };
   }
-  return versionStatus(v);
+  if (signs.length) return { cls: 'info', text: 'PHP detected — version hidden',
+    why: 'detected via ' + signsText(signs) + '; no version number shown' };
+  if (/kphp/i.test(String(g.x_powered_by || ''))) return { cls: 'info', text: 'no PHP engine seen',
+    why: 'X-Powered-By says ' + g.x_powered_by + ' — KPHP is VK’s PHP compiler, not the PHP engine this bug is in' };
+  const gs = g.status | 0;
+  return { cls: 'info', text: 'no PHP signs seen',
+    why: (gs === 202 || gs === 401 || gs === 403 || gs === 429
+      ? 'the homepage answered ' + gs + ' (' + (STATUS_NAMES[gs] || 'refused') + '), so there was little to inspect; '
+      : '') + 'no X-Powered-By: PHP header and no PHP session cookie on any response' };
 }
 
 /* standard reason phrases (RFC 9110 + common extensions) - shown inside the
    response pills, e.g. "405 Method Not Allowed"; unknown codes stay bare */
 const STATUS_NAMES = {
-  200: 'OK', 201: 'Created', 204: 'No Content', 206: 'Partial Content',
+  200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 206: 'Partial Content',
   301: 'Moved Permanently', 302: 'Found', 303: 'See Other', 304: 'Not Modified',
   307: 'Temporary Redirect', 308: 'Permanent Redirect',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
@@ -336,6 +382,9 @@ const STATUS_NAMES = {
   451: 'Unavailable For Legal Reasons',
   500: 'Internal Server Error', 501: 'Not Implemented', 502: 'Bad Gateway',
   503: 'Service Unavailable', 504: 'Gateway Timeout', 505: 'HTTP Version Not Supported',
+  520: 'Unknown Error (CDN)', 521: 'Web Server Is Down (CDN)', 522: 'Connection Timed Out (CDN)',
+  523: 'Origin Is Unreachable (CDN)', 524: 'A Timeout Occurred (CDN)', 525: 'SSL Handshake Failed (CDN)',
+  526: 'Invalid SSL Certificate (CDN)', 530: 'Origin DNS Error (CDN)',
 };
 
 /* plain-language meaning of each status code, shown inside the response
@@ -343,6 +392,7 @@ const STATUS_NAMES = {
    request in THIS test. Unknown codes fall back to their class. */
 const STATUS_EXPLAIN = {
   200: ['accepted', 'The server accepted the request and answered normally.'],
+  202: ['accepted for later \u2014 often a bot check', 'Accepted. Bot protection (e.g. AWS WAF) often answers 202 with a challenge page instead of the real site.'],
   201: ['accepted, something created', 'The server accepted the request and created something.'],
   204: ['accepted, empty answer', 'The server accepted the request and sent no body back.'],
   206: ['partial answer', 'The server sent only part of the content.'],
@@ -374,6 +424,14 @@ const STATUS_EXPLAIN = {
   502: ['bad answer from backend', 'Bad Gateway: a proxy got an invalid answer from the server behind it.'],
   503: ['unavailable / overloaded', 'Service Unavailable: overloaded, in maintenance or down.'],
   504: ['backend timed out', 'Gateway Timeout: the server behind the proxy did not answer in time.'],
+  520: ['CDN got no usable answer', 'The CDN could not get a valid answer from the site\u2019s own server.'],
+  521: ['site\u2019s server is down', 'The CDN could not connect: the site\u2019s own web server is down.'],
+  522: ['site\u2019s server timed out', 'The CDN timed out connecting to the site\u2019s own server.'],
+  523: ['site\u2019s server unreachable', 'The CDN cannot reach the site\u2019s own server.'],
+  524: ['site\u2019s server too slow', 'The site\u2019s own server took too long to answer the CDN.'],
+  525: ['CDN \u2192 server TLS failed', 'TLS between the CDN and the site\u2019s own server failed.'],
+  526: ['server certificate invalid', 'The site\u2019s own server presented an invalid certificate to the CDN.'],
+  530: ['CDN cannot find the server', 'The CDN could not resolve the site\u2019s own server.'],
   505: ['HTTP version refused', 'The server does not support this HTTP version.'],
 };
 function statusExplain(s) {
@@ -388,10 +446,11 @@ function statusExplain(s) {
 function blockDimension(facts) {
   if (facts.level !== 'block') return null;
   const g = facts.get || {};
-  // any PHP indicator (banner or session cookie) - suppresses "static hosting"
-  // phrasing: PHP is demonstrably present, we just cannot version-check it
-  const phpEvidence = !!(g.php_session_cookie || g.x_powered_by);
+  // PHP signs anywhere on this site (see phpSigns) decide how redirects,
+  // accepted uploads and 405s are read
+  const phpEvidence = phpSigns(facts).length > 0;
   const st = p => (p.first_status !== undefined ? p.first_status : (p.redirect ? 302 : p.status));
+  const sn = s => s + (STATUS_NAMES[s] ? ' ' + STATUS_NAMES[s] : '');
 
   const isMultipartThrough = p => {
     if (!p || p.error || p.skipped) return false;
@@ -410,28 +469,33 @@ function blockDimension(facts) {
     return { cls: 'info', static: true, text: ue.error ? 'probe error (' + ue.error + ')'
       : 'POST requests dropped before any processing'
         + (ue.baseline_error ? ' (' + ue.baseline_error + ')' : '')
-        + (phpEvidence ? ' — PHP present, version unknown' : ' — no PHP indicators') };
+        + (phpEvidence ? ' — PHP present' : ' — no PHP signs') };
   }
   for (const [m, p] of mps) if (p.error) return { cls: 'info', text: 'probe error (' + m + ': ' + p.error + ')' };
-  // method-level 405/501 on every request = nothing here accepts a request
-  // body; with zero PHP indicators that usually means static hosting
+  const rej = mps.map(([m, p]) => m + ' ' + st(p)).join(', ');
+  // bot challenge (e.g. AWS WAF): 202 to everything, GET included - the
+  // protection answered, not the site. Never "accepted".
+  if (st(g) === 202 && mps.every(([m, p]) => st(p) === 202))
+    return { cls: 'warn', waf: true, text: 'bot challenge (202) on every request',
+      why: 'the site’s bot protection answered instead of the site, so nothing could be tested' };
+  // method-level 405/501 on every request = nothing here accepts a request body
   const all405 = [ue].concat(mps.map(function (e) { return e[1]; }))
     .every(p => st(p) === 405 || st(p) === 501);
   if (all405) {
     const ms = mps.map(function (e) { return e[0]; }).join('+');
     // who said 405? PHP signs ON the 405 responses (session cookie /
-    // X-Powered-By) = PHP generated it, i.e. after it parsed the upload
-    const signed = mps.filter(([m, p]) => p.php_session_cookie || p.x_powered_by);
+    // X-Powered-By: PHP) = PHP generated it, i.e. after it parsed the upload
+    const signed = mps.filter(([m, p]) => p.php_session_cookie || isPhpXpb(p.x_powered_by));
     if (signed.length) return { cls: 'bad', php405: true,
-      text: 'NOT BLOCKED \u2014 PHP itself answered 405 on ' + andList(signed.map(e => e[0])),
+      text: 'NOT BLOCKED — PHP itself answered 405 on ' + andList(signed.map(e => e[0])),
       why: 'the 405 carries a PHP ' + (signed[0][1].php_session_cookie ? 'session cookie' : 'X-Powered-By header')
-        + ', so PHP read the upload before refusing it \u2014 see Technical info' };
+        + ', so PHP read the upload before refusing it — see Technical info' };
     // PHP is on the site but the 405s carry no PHP signs: the web server /
     // edge refused the method before PHP saw the body
     if (phpEvidence) return { cls: 'ok', static: true, notVuln: true,
       text: 'uploads refused with 405 before PHP saw them (' + ms + ')' };
     return { cls: 'info', static: true,
-      text: 'no request-body processing (405/501 on ' + ms + ') — static hosting likely' };
+      text: 'no uploads accepted here (405/501 on ' + ms + ') and no PHP seen' };
   }
   // multipart reached the backend on ANY method (blocking POST alone is not enough)
   const through = mps.filter(([m, p]) => isMultipartThrough(p));
@@ -439,16 +503,17 @@ function blockDimension(facts) {
     // plain-language chip + a short gray "why" (status codes live in the
     // Technical info table): one shared answer is summarised once, mixed
     // answers are listed per method
-    const sn = s => s + (STATUS_NAMES[s] ? ' ' + STATUS_NAMES[s] : '');
     const ans = p => {
       const fs = p.first_status !== undefined ? p.first_status : p.status;
       return sn(fs) + (fs !== p.status ? ', then ' + sn(p.status) + ' after the redirect' : '');
     };
     const answers = through.map(([m, p]) => ans(p));
     const why = 'server answered ' + (answers.every(a => a === answers[0]) ? answers[0]
-      : through.map(([m, p], i) => m + ' ' + answers[i]).join('; ')) + ' \u2014 see Technical info';
+      : through.map(([m, p], i) => m + ' ' + answers[i]).join('; '))
+      + (phpEvidence ? ' — see Technical info'
+        : ' — only a risk if this site runs PHP; no PHP signs seen');
     return { cls: 'bad', why,
-      text: 'NOT BLOCKED \u2014 test uploads were accepted on ' + andList(through.map(e => e[0])) };
+      text: 'NOT BLOCKED — test uploads were accepted on ' + andList(through.map(e => e[0])) };
   }
   // a redirect is NOT a block: a PHP front controller parses the multipart
   // body BEFORE its code issues the 3xx, and 301/302/303 turn the follow-up
@@ -459,30 +524,42 @@ function blockDimension(facts) {
     const dest = bareDomain(hostOf((redir[0][1] || {}).final_url));
     const orig = bareDomain(hostOf(facts.url));
     if (phpEvidence) return { cls: 'bad', redirTo: dest || orig,
-      text: 'NOT BLOCKED \u2014 test uploads were redirected, not blocked, on ' + ms,
-      why: 'PHP reads an upload before the page code runs, so a redirect from a PHP site is no protection \u2014 see Technical info' };
-    return { cls: 'info', redirTo: dest || orig,
-      text: 'INCONCLUSIVE \u2014 test uploads were redirected on ' + ms,
-      why: 'a redirect is not a block, and the destination was not tested with an upload'
-        + (dest && dest !== orig ? ' \u2014 check ' + dest + ' itself' : '') };
+      text: 'NOT BLOCKED — test uploads were redirected, not blocked, on ' + ms,
+      why: 'PHP reads an upload before the page code runs, so a redirect from a PHP site is no protection — see Technical info' };
+    // "check X" only for the same site; logins / consent walls elsewhere
+    // are not the site under test
+    const third = dest && dest !== orig && siteOf(dest) !== siteOf(orig);
+    return { cls: 'info', redirTo: dest || orig, thirdParty: third,
+      text: 'INCONCLUSIVE — test uploads were redirected on ' + ms,
+      why: third ? 'they went to a third-party page (' + dest + ', e.g. a login or cookie wall), so your site itself was not reached'
+        : 'a redirect is not a block, and the destination was not tested with an upload'
+          + (dest && dest !== orig ? ' — check ' + dest + ' itself' : '') };
   }
-  // multipart rejected wherever we probed it
+  // multipart rejected wherever we probed it while the plain form got
+  // through: a content-type rule fired, likely before PHP parsed the body
   if (isMultipartThrough(ue)) {
-    // asymmetric rejection on POST = a content-type rule fired, likely before
-    // PHP ever parsed the body
-    return { cls: 'ok', text: 'active (multipart rejected' + (mps.length === 3 ? ' on POST+PUT+PATCH' : ' on POST') + ', likely before PHP)' };
+    return { cls: 'ok', text: 'active (multipart rejected on ' + mps.map(([m]) => m).join('+') + ', likely before PHP)' };
   }
-  // baseline also rejected: identical rejection of both content types cannot be
-  // told apart remotely from an app-level 405/403, which happens AFTER PHP
-  // parsed the body - so it proves nothing protective.
-  // When every probe (including GET) was edge-blocked (403/406), mark WAF assumed.
+  // CDN "origin down" (Cloudflare 520-530): the site itself never answered
+  const cdnDown = s => s >= 520 && s <= 530;
+  if (mps.every(([m, p]) => cdnDown(st(p))))
+    return { cls: 'info', unreach: true, text: 'origin server down behind the CDN (' + sn(st(mps[0][1])) + ')' };
+  // 5xx is not a rejection: the request was processed and failed
+  if (mps.every(([m, p]) => st(p) >= 500))
+    return { cls: 'info', text: 'server error on every upload test (' + rej + ') — inconclusive' };
+  // every probe (including GET) refused at the edge -> could not test
   const gst = st(g);
   const isBlock = s => s === 403 || s === 406;
   if (isBlock(gst) && isBlock(st(ue)) && mps.every(([_, p]) => isBlock(st(p)))) {
-    return { cls: 'warn', waf: true, text: 'WAF assumed (' + gst + ' on GET+' + mps.map(([m]) => m).join('+') + ')' };
+    return { cls: 'warn', waf: true,
+      text: 'firewall / bot protection refused every request (' + gst + ' on GET+' + mps.map(([m]) => m).join('+') + ')' };
   }
-  const rej = mps.map(([m, p]) => m + ' ' + st(p)).join(', ');
-  return { cls: 'info', text: 'all rejected (' + rej + ') — edge vs app-level indistinguishable remotely' };
+  if (mps.some(([m, p]) => st(p) === 429))
+    return { cls: 'info', text: 'rate-limited (429) — try again later' };
+  // identical rejection of both content types cannot be told apart remotely
+  // from an app-level 403/404, which happens AFTER PHP parsed the body
+  return { cls: 'info', text: 'uploads refused (' + rej + ')',
+    why: 'can’t tell from outside whether this happened before or after PHP read them — not proof of protection' };
 }
 
 function interpret(facts) {
@@ -490,30 +567,26 @@ function interpret(facts) {
   let cls = 'info', label = 'UNKNOWN';
   const g = facts.get || {};
   const ue = facts.post_urlencoded || {};
+  const phpSeen = phpSigns(facts).length > 0;
   // connection refused = nothing is serving on that URL: nothing to assess
   if (/connectionrefused/i.test(String(g.error || ''))) { cls = 'ok'; label = 'OFFLINE'; }
   // GET failed AND the block probes also failed or never ran -> unreachable
   else if (g.error && (!blk || ue.error || blk.static)) { cls = 'info'; label = 'UNREACHABLE'; }
+  else if (blk && blk.unreach) { cls = 'info'; label = 'UNREACHABLE'; }
   // edge-level block: WAF or firewall refused our probes outright -> TEST BLOCKED
   else if (blk && blk.waf) { cls = 'warn'; label = 'TEST BLOCKED'; }
   else if (php.cls === 'bad' && blk && blk.cls === 'bad') { cls = 'bad'; label = 'EXPOSED'; }
   else if (php.cls === 'bad') { cls = 'bad'; label = 'UNPATCHED'; }
   else if (blk && blk.notVuln) { cls = 'ok'; label = php.cls === 'ok' ? 'PATCHED' : '(PROBABLY) NOT VULNERABLE'; }
   else if (blk && blk.cls === 'ok') { cls = 'ok'; label = 'BLOCKED'; }
-  // multipart-family requests flow through: if confirmed PHP indicators exist,
-  // assume vulnerable until a patched PHP version is verified; without PHP indicators,
-  // report unknown (less confident)
+  // multipart-family requests flow through: with PHP signs, assume
+  // vulnerable until a patched PHP version is verified; without, unknown
   else if (blk && blk.cls === 'bad') {
-    if (g.php_session_cookie || g.x_powered_by || blk.php405) {
-      cls = 'bad'; label = 'ASSUMED VULNERABLE';
-    } else {
-      cls = 'info'; label = 'UNKNOWN';
-    }
+    if (phpSeen || blk.php405) { cls = 'bad'; label = 'ASSUMED VULNERABLE'; }
+    else { cls = 'info'; label = 'UNKNOWN'; }
   }
-  // nothing POST-shaped is processed here AND zero PHP indicators anywhere
-  // (no banner, no session cookie): nothing to exploit at this URL
-  else if (blk && blk.static && php.cls === 'info'
-           && !g.php_session_cookie && !g.x_powered_by) { cls = 'ok'; label = 'NO PHP DETECTED'; }
+  // nothing POST-shaped is processed here AND zero PHP signs anywhere
+  else if (blk && blk.static && php.cls === 'info' && !phpSeen) { cls = 'ok'; label = 'NO PHP DETECTED'; }
   else if (php.cls === 'ok') { cls = 'ok'; label = 'PATCHED'; }
   return { cls, label, php, blk };
 }
@@ -695,7 +768,7 @@ function explainVerdict(f, v) {
           + ' was never tested. A redirect is not a protection: it says nothing about whether the destination is vulnerable.';
         advice = other ? 'Run the check on the destination: ' : 'Test the exact URL that handles uploads on the host itself.';
         if (other) adviceHtml = '<a href="/' + niceParam(to) + '">check ' + esc(to) + ' \u2192</a>';
-      } else if (v && v.blk && v.blk.cls === 'bad' && !g.php_session_cookie && !g.x_powered_by) {
+      } else if (v && v.blk && v.blk.cls === 'bad' && !phpSigns(f).length) {
         summary = 'Multipart requests are accepted, but no PHP indicators were found.';
         details = 'The server accepts multipart payloads, but provides no PHP version banner or PHP session cookies. The backend may be running Python, Node.js, Go, Java, or PHP with custom headers.';
         advice = 'If this service runs PHP behind a proxy, verify on the host whether PHP is on a patched release.';
@@ -815,7 +888,7 @@ function techInfo(f, v) {
   const upEvidence = p => {
     if (!blkBad || !p || p.error || p.skipped) return false;
     const fs = p.first_status !== undefined ? p.first_status : p.status;
-    if (v.blk.php405) return !!(p.php_session_cookie || p.x_powered_by);
+    if (v.blk.php405) return !!(p.php_session_cookie || isPhpXpb(p.x_powered_by));
     return (fs >= 200 && fs < 300) || ((fs === 307 || fs === 308) && p.status >= 200 && p.status < 300);
   };
   row('GET', 'no body', g, phpBad);
@@ -912,7 +985,8 @@ function render(f) {
   setFavicon(v.cls);
   document.title = 'php2shell.site \u2014 ' + (shown || 'check');
   $('verdict').innerHTML = chip(v.cls, v.label);
-  $('dimphp').innerHTML = chip(v.php.cls, v.php.text);
+  $('dimphp').innerHTML = chip(v.php.cls, v.php.text)
+    + (v.php.why ? ' <span class="small" style="color:var(--muted)">(' + esc(v.php.why) + ')</span>' : '');
   $('dimblk').innerHTML = v.blk ? chip(v.blk.cls, v.blk.text)
     + (v.blk.why ? ' <span class="small" style="color:var(--muted)">(' + esc(v.blk.why) + ')</span>' : '')
     : '<span class="small">not tested</span>';

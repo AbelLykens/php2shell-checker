@@ -1303,6 +1303,15 @@ class ServiceState(object):
         hit = self.og.get(url) if self.og is not None else None
         if hit is not None:
             return hit
+        facts = self.stored_facts(url)
+        png = og_png(facts, self.get_releases())
+        if self.og is not None:
+            self.og.put(url, png)
+        return png
+
+    def stored_facts(self, url):
+        """Newest stored block-level facts for a normalized URL (memcached,
+        then the store; any age up to 30 days), or None. Read-only."""
         facts = None
         if self.mc is not None:
             for cand in dict.fromkeys((url, url.rstrip("/"), url.rstrip("/") + "/")):
@@ -1323,10 +1332,7 @@ class ServiceState(object):
                     break
             if facts is not None:
                 facts.pop("cached", None)
-        png = og_png(facts, self.get_releases())
-        if self.og is not None:
-            self.og.put(url, png)
-        return png
+        return facts
 
     # -- readouts ----------------------------------------------------------
 
@@ -1462,41 +1468,107 @@ def _og_font(size, mono=False):
         return ImageFont.load_default(size=size)
 
 
+# ---- PHP detection (mirror of the client's phpSigns/isPhpXpb/siteOf) -----
+_PROBE_LABELS = (("get", "GET"), ("post_urlencoded", "POST baseline"),
+                 ("post_multipart", "POST multipart"),
+                 ("put_urlencoded", "PUT baseline"), ("put_multipart", "PUT multipart"),
+                 ("patch_urlencoded", "PATCH baseline"),
+                 ("patch_multipart", "PATCH multipart"))
+_STATUS_NAMES = {202: "Accepted", 401: "Unauthorized", 403: "Forbidden",
+                 429: "Too Many Requests", 520: "Unknown Error (CDN)",
+                 521: "Web Server Is Down (CDN)", 522: "Connection Timed Out (CDN)",
+                 523: "Origin Is Unreachable (CDN)", 524: "A Timeout Occurred (CDN)",
+                 525: "SSL Handshake Failed (CDN)", 526: "Invalid SSL Certificate (CDN)",
+                 530: "Origin DNS Error (CDN)"}
+
+
+def _is_php_xpb(v):
+    """X-Powered-By names PHP itself (PHP/8.3.4) - not Next.js/Express/KPHP."""
+    return bool(re.search(r"(^|[^a-z])php(/|\s|;|,|$)", str(v or ""), re.I))
+
+
+def _site_of(h):
+    p = [x for x in str(h or "").lower().split(".") if x]
+    if len(p) < 3:
+        return ".".join(p)
+    if len(p[-1]) == 2 and p[-2] in ("co", "com", "org", "net", "gov", "ac",
+                                     "edu", "ne", "or"):
+        return ".".join(p[-3:])
+    return ".".join(p[-2:])
+
+
+def _host_bare(u):
+    return (urllib.parse.urlsplit(u or "").hostname or "").lower()
+
+
+def _php_signs(facts):
+    """Every PHP sign with the request it came from; responses that ended on
+    another site after a redirect do not count for this one."""
+    home = _site_of(_host_bare(facts.get("url")))
+    out = []
+    for k, lab in _PROBE_LABELS:
+        p = facts.get(k)
+        if not p or "error" in p or p.get("skipped"):
+            continue
+        if (p.get("redirects") or 0) > 0 and p.get("final_url") \
+                and _site_of(_host_bare(p["final_url"])) != home:
+            continue
+        if _is_php_xpb(p.get("x_powered_by")):
+            out.append((k, lab, "X-Powered-By: " + str(p["x_powered_by"])))
+        if p.get("php_session_cookie"):
+            out.append((k, lab, "PHP session cookie"))
+    return out
+
+
+def _signs_text(signs):
+    by = {}
+    for _k, lab, what in signs:
+        by.setdefault(what, []).append(lab)
+    return "; ".join("%s (%s)" % (w, ", ".join(l)) for w, l in by.items())
+
+
 def _php_preview(facts, releases):
     """Mirror of the client's phpDimension (server-side patched list)."""
     g = facts.get("get") or {}
     if "error" in g:
         return {"cls": "info", "text": "no response"}
-    m = re.search(r"PHP/(\d+(?:\.\d+)+)", str(g.get("x_powered_by") or ""), re.I)
-    if not m:
-        seen = "PHP app (session cookie), " if g.get("php_session_cookie") else ""
-        return {"cls": "info",
-                "text": seen + "version hidden — unknown (HTTP %s)" % (g.get("status") or "?")}
-    v = m.group(1)
+    signs = _php_signs(facts)
+    v = None
+    for _k, _l, what in signs:
+        m = re.search(r"(?:^|[^a-z])PHP/(\d+(?:\.\d+)+)", what, re.I)
+        if m:
+            v = m.group(1)
+            break
+    if v is None:
+        if signs:
+            return {"cls": "info", "text": "PHP detected — version hidden"}
+        if re.search(r"kphp", str(g.get("x_powered_by") or ""), re.I):
+            return {"cls": "info", "text": "no PHP engine seen"}
+        return {"cls": "info", "text": "no PHP signs seen"}
     if not releases:
-        return {"cls": "info", "text": v + " — patched list not set"}
+        return {"cls": "info", "text": "PHP " + v + " — patched list not set"}
     parts = v.split(".")
     maj = int(parts[0])
     mino = int(parts[1]) if len(parts) > 1 else 0
     if maj < 8:
-        return {"cls": "bad", "text": v + " — EOL branch, no fix coming"}
+        return {"cls": "bad", "text": "PHP " + v + " — EOL branch, no fix coming"}
     entry = None
-    for p in releases:
-        pp = p.split(".")
+    for r in releases:
+        pp = r.split(".")
         if len(pp) > 1 and int(pp[0]) == maj and int(pp[1]) == mino:
-            entry = p
+            entry = r
             break
     # an 8.x branch older than every listed 8.x branch is EOL (8.0/8.1 by now)
-    minors = [int(p.split(".")[1]) for p in releases
-              if len(p.split(".")) > 1 and int(p.split(".")[0]) == maj]
+    minors = [int(r.split(".")[1]) for r in releases
+              if len(r.split(".")) > 1 and int(r.split(".")[0]) == maj]
     if entry is None and minors and mino < min(minors):
-        return {"cls": "bad", "text": v + " — EOL branch, no fix coming"}
+        return {"cls": "bad", "text": "PHP " + v + " — EOL branch, no fix coming"}
     if entry is None:
-        return {"cls": "info", "text": v + " — no data for this branch — unknown"}
-    key = lambda s: tuple(int(x) for x in s.split("."))
+        return {"cls": "info", "text": "PHP " + v + " — no data for this branch — unknown"}
+    key = lambda x: tuple(int(y) for y in x.split("."))
     if key(v) >= key(entry):
-        return {"cls": "ok", "text": v + " ≥ " + entry}
-    return {"cls": "bad", "text": v + " < " + entry}
+        return {"cls": "ok", "text": "PHP " + v + " ≥ " + entry}
+    return {"cls": "bad", "text": "PHP " + v + " < " + entry}
 
 
 def _blk_preview(facts):
@@ -1504,8 +1576,7 @@ def _blk_preview(facts):
     if facts.get("level") != "block":
         return None
     g = facts.get("get") or {}
-    php_ev = bool(g.get("php_session_cookie") or g.get("x_powered_by"))
-    tail = " — PHP present, version unknown" if php_ev else None
+    php_ev = bool(_php_signs(facts))
 
     def st(p):
         if "first_status" in p:
@@ -1513,6 +1584,9 @@ def _blk_preview(facts):
         if p.get("redirect"):
             return 302
         return p.get("status") or 0
+
+    def sn(c):
+        return "%s %s" % (c, _STATUS_NAMES[c]) if c in _STATUS_NAMES else str(c)
 
     def is_through(p):
         if not p or "error" in p or p.get("skipped"):
@@ -1523,6 +1597,9 @@ def _blk_preview(facts):
         if fs in (307, 308) and 200 <= (p.get("status") or 0) < 300:
             return True
         return False
+
+    def and_list(a):
+        return a[0] if len(a) < 2 else ", ".join(a[:-1]) + " and " + a[-1]
 
     ue = facts.get("post_urlencoded") or {}
     mps = [(m, facts.get(m.lower() + "_multipart"))
@@ -1536,31 +1613,30 @@ def _blk_preview(facts):
         return {"cls": "info", "static": True,
                 "text": "POST requests dropped before any processing"
                         + (" (%s)" % be if be else "")
-                        + (tail or " — no PHP indicators")}
+                        + (" — PHP present" if php_ev else " — no PHP signs")}
     if any("error" in p for _, p in mps):
         return {"cls": "info", "text": "probe error"}
+    rej = ", ".join("%s %s" % (m, st(p)) for m, p in mps)
+    if st(g) == 202 and all(st(p) == 202 for _, p in mps):
+        return {"cls": "warn", "waf": True,
+                "text": "bot challenge (202) on every request"}
     all405 = all(st(p) in (405, 501)
                  for p in [ue] + [p for _, p in mps])
     if all405:
         ms = "+".join(m for m, _ in mps)
-        # PHP signs ON the 405s = PHP generated it, after parsing the upload
         signed = [m for m, p in mps
-                  if p.get("php_session_cookie") or p.get("x_powered_by")]
+                  if p.get("php_session_cookie") or _is_php_xpb(p.get("x_powered_by"))]
         if signed:
-            sl = signed[0] if len(signed) < 2 \
-                else ", ".join(signed[:-1]) + " and " + signed[-1]
             return {"cls": "bad", "php405": True,
-                    "text": "NOT BLOCKED — PHP itself answered 405 on " + sl}
+                    "text": "NOT BLOCKED — PHP itself answered 405 on "
+                            + and_list(signed)}
         if php_ev:
             return {"cls": "ok", "static": True, "not_vuln": True,
                     "text": "uploads refused with 405 before PHP saw them (%s)"
                             % ms}
         return {"cls": "info", "static": True,
-                "text": "no request-body processing (405/501 on %s)"
-                        " — static hosting likely" % ms}
-    def and_list(a):
-        return a[0] if len(a) < 2 else ", ".join(a[:-1]) + " and " + a[-1]
-
+                "text": "no uploads accepted here (405/501 on %s) and no PHP seen"
+                        % ms}
     through = [m for m, p in mps if is_through(p)]
     if through:
         return {"cls": "bad",
@@ -1579,18 +1655,23 @@ def _blk_preview(facts):
                         + and_list(redir)}
     if is_through(ue):
         return {"cls": "ok", "text": "active (multipart rejected on "
-                + ("POST+PUT+PATCH" if len(mps) == 3 else "POST") + ", likely before PHP)"}
-    # When every probe (including GET) was edge-blocked (403/406), mark WAF assumed.
+                + "+".join(m for m, _ in mps) + ", likely before PHP)"}
+    if all(520 <= st(p) <= 530 for _, p in mps):
+        return {"cls": "info", "unreach": True,
+                "text": "origin server down behind the CDN (%s)"
+                        % sn(st(mps[0][1]))}
+    if all(st(p) >= 500 for _, p in mps):
+        return {"cls": "info",
+                "text": "server error on every upload test (%s) — inconclusive" % rej}
     gst = st(g)
-    is_blk = lambda s: s in (403, 406)
+    is_blk = lambda c: c in (403, 406)
     if is_blk(gst) and is_blk(st(ue)) and all(is_blk(st(p)) for _, p in mps):
         return {"cls": "warn", "waf": True,
-                "text": "WAF assumed (%s on GET+%s)"
-                        % (gst, "+".join(m for m, _ in mps))}
-    rej = ", ".join("%s %s" % (m, st(p)) for m, p in mps)
-    return {"cls": "info",
-            "text": "all rejected (%s) — edge vs app-level indistinguishable remotely"
-                    % rej}
+                "text": "firewall / bot protection refused every request "
+                        "(%s on GET+%s)" % (gst, "+".join(m for m, _ in mps))}
+    if any(st(p) == 429 for _, p in mps):
+        return {"cls": "info", "text": "rate-limited (429) — try again later"}
+    return {"cls": "info", "text": "uploads refused (%s)" % rej}
 
 
 def _verdict_preview(facts, releases):
@@ -1599,9 +1680,12 @@ def _verdict_preview(facts, releases):
     php = _php_preview(facts, releases)
     blk = _blk_preview(facts)
     ue = facts.get("post_urlencoded") or {}
+    php_seen = bool(_php_signs(facts))
     if "connectionrefused" in str(g.get("error") or "").lower():
         return "OFFLINE", "ok", php, blk
     if "error" in g and (blk is None or "error" in ue or blk.get("static")):
+        return "UNREACHABLE", "info", php, blk
+    if blk and blk.get("unreach"):
         return "UNREACHABLE", "info", php, blk
     if blk and blk.get("waf"):
         return "TEST BLOCKED", "warn", php, blk
@@ -1615,16 +1699,26 @@ def _verdict_preview(facts, releases):
     if blk and blk["cls"] == "ok":
         return "BLOCKED", "ok", php, blk
     if blk and blk["cls"] == "bad":
-        if g.get("php_session_cookie") or g.get("x_powered_by") \
-                or blk.get("php405"):
+        if php_seen or blk.get("php405"):
             return "ASSUMED VULNERABLE", "bad", php, blk
         return "UNKNOWN", "info", php, blk
-    if (blk and blk.get("static") and php["cls"] == "info"
-            and not g.get("php_session_cookie") and not g.get("x_powered_by")):
+    if blk and blk.get("static") and php["cls"] == "info" and not php_seen:
         return "NO PHP DETECTED", "ok", php, blk
     if php["cls"] == "ok":
         return "PATCHED", "ok", php, blk
     return "UNKNOWN", "info", php, blk
+
+
+def finding_summary(facts, releases):
+    """One line for link previews (og:description): verdict + the two
+    findings, e.g. 'ASSUMED VULNERABLE — NOT BLOCKED — test uploads were
+    accepted on POST · PHP detected — version hidden'."""
+    label, _cls, php, blk = _verdict_preview(facts, releases)
+    bits = [label]
+    if blk:
+        bits.append(blk["text"])
+    line = " — ".join(bits) + " · " + php["text"]
+    return line if len(line) <= 200 else line[:199] + "…"
 
 
 def _og_chip(d, x, y, text, pal, font, max_w, max_lines=1):
@@ -1749,7 +1843,7 @@ def og_png(facts, releases):
                 # tightened spacing to make room for the extra line
                 d.text((80, 206), "VERDICT", font=f_lab, fill=_OG_C["muted"])
                 _og_chip(d, 80, 232, label, _OG_C[cls], f_verdict, chip_max)
-                d.text((80, 298), "PHP banner", font=f_lab, fill=_OG_C["muted"])
+                d.text((80, 298), "PHP detection", font=f_lab, fill=_OG_C["muted"])
                 _og_chip(d, 80, 324, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
                 d.text((80, 390), "vulnerability check", font=f_lab, fill=_OG_C["muted"])
                 btxt = blk["text"] if blk else "not tested"
@@ -1759,7 +1853,7 @@ def og_png(facts, releases):
             else:
                 d.text((80, 214), "VERDICT", font=f_lab, fill=_OG_C["muted"])
                 _og_chip(d, 80, 244, label, _OG_C[cls], f_verdict, chip_max)
-                d.text((80, 322), "PHP banner", font=f_lab, fill=_OG_C["muted"])
+                d.text((80, 322), "PHP detection", font=f_lab, fill=_OG_C["muted"])
                 _og_chip(d, 80, 350, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
                 d.text((80, 422), "vulnerability check", font=f_lab, fill=_OG_C["muted"])
                 btxt = blk["text"] if blk else "not tested"
@@ -1924,17 +2018,25 @@ class Handler(BaseHTTPRequestHandler):
                 u = _norm_target(sp.path.lstrip("/"))
             if u:
                 host = (self.headers.get("Host") or "").strip() or "php2shell.site"
+                # description = one line on THIS target's findings; the
+                # generic tagline only when nothing is stored for it yet
+                try:
+                    facts = self.state.stored_facts(u)
+                except Exception:
+                    facts = None
+                shown = re.sub(r"^https?://", "", u, flags=re.I).rstrip("/")
+                desc = (finding_summary(facts, self.state.get_releases()) if facts
+                        else "Not checked yet — open to check %s for "
+                             "CVE-2026-109618/619 (PHP upload parsing)." % shown)
                 meta = (
                     '<meta property="og:title" content="php2shell check — %s">\n'
-                    '  <meta property="og:description" content='
-                    '"Patch & mitigation status for CVE-2026-109618/619 '
-                    '(PHP session.upload_progress) — inert, raw-facts only.">\n'
+                    '  <meta property="og:description" content="%s">\n'
                     '  <meta property="og:image" content="https://%s/api/og?url=%s">\n'
                     '  <meta property="og:image:width" content="1200">\n'
                     '  <meta property="og:image:height" content="630">\n'
                     '  <meta name="twitter:card" content="summary_large_image">'
-                ) % (html.escape(u, quote=True), html.escape(host, quote=True),
-                     urllib.parse.quote(u, safe=""))
+                ) % (html.escape(u, quote=True), html.escape(desc, quote=True),
+                     html.escape(host, quote=True), urllib.parse.quote(u, safe=""))
                 page = page.replace("</head>", meta + "\n</head>", 1)
         elif sp.query:
             # legacy query-form shares: 301 to the /<target> path form
