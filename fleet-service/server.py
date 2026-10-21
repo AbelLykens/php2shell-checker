@@ -1400,24 +1400,40 @@ class Handler(BaseHTTPRequestHandler):
             _INDEX_HTML = _INDEX.decode("utf-8")
         page = _INDEX_HTML
         # link previews (WhatsApp/Slack/Twitter/...) do not run JS and ignore
-        # fragments - inject OG meta only when a ?url= is present. The image
+        # fragments - inject OG meta only when a target is present. The image
         # is the server-rendered dark-mode card for that URL's stored result.
-        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-        u = _norm_target((q.get("url") or [""])[0])
-        if u:
-            host = (self.headers.get("Host") or "").strip() or "p2s.cheeserobot.org"
-            meta = (
-                '<meta property="og:title" content="php2shell check — %s">\n'
-                '  <meta property="og:description" content='
-                '"Patch & mitigation status for CVE-2026-109618/619 '
-                '(PHP session.upload_progress) — inert, raw-facts only.">\n'
-                '  <meta property="og:image" content="https://%s/api/og?url=%s">\n'
-                '  <meta property="og:image:width" content="1200">\n'
-                '  <meta property="og:image:height" content="630">\n'
-                '  <meta name="twitter:card" content="summary_large_image">'
-            ) % (html.escape(u, quote=True), html.escape(host, quote=True),
-                 urllib.parse.quote(u, safe=""))
-            page = page.replace("</head>", meta + "\n</head>", 1)
+        # Share format: the query string after "?" IS the target URL
+        # (e.g. /?example.com/a). Legacy ?url=<u> shares get a permanent 301 to
+        # the bare form; /api/og keeps its documented url= parameter.
+        raw_q = urllib.parse.urlsplit(self.path).query
+        if raw_q.startswith("url=") and len(raw_q) > 4:
+            legacy = _norm_target(urllib.parse.unquote(
+                raw_q[4:].replace("~", "&")))
+            if legacy:
+                nice = re.sub(r"^https?://", "", legacy, flags=re.I).rstrip("/")
+                loc = "/?" + urllib.parse.quote(nice, safe="/:._~-")
+                self.send_response(301)
+                self.send_header("Location", loc)
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                return
+        elif raw_q:
+            u = _norm_target(raw_q)
+            if u:
+                host = (self.headers.get("Host") or "").strip() or "p2s.cheeserobot.org"
+                meta = (
+                    '<meta property="og:title" content="php2shell check — %s">\n'
+                    '  <meta property="og:description" content='
+                    '"Patch & mitigation status for CVE-2026-109618/619 '
+                    '(PHP session.upload_progress) — inert, raw-facts only.">\n'
+                    '  <meta property="og:image" content="https://%s/api/og?url=%s">\n'
+                    '  <meta property="og:image:width" content="1200">\n'
+                    '  <meta property="og:image:height" content="630">\n'
+                    '  <meta name="twitter:card" content="summary_large_image">'
+                ) % (html.escape(u, quote=True), html.escape(host, quote=True),
+                     urllib.parse.quote(u, safe=""))
+                page = page.replace("</head>", meta + "\n</head>", 1)
         body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")

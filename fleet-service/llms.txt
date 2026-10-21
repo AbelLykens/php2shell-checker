@@ -2,7 +2,9 @@
 
 Public checker for the patch & mitigation status of CVE-2026-109618 / CVE-2026-109619
 (PHP `session.upload_progress` use-after-free; "php2shell"). One URL at a time,
-submitted at `/?url=<host>` or through the JSON API below.
+submitted at `/?<host>` (the query string after `?` is the target, e.g.
+`/?example.com/a`) or through the JSON API below. Legacy `/?url=<host>` links
+redirect permanently to the bare form.
 
 ## What it does
 

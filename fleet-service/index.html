@@ -196,7 +196,7 @@
     <p><strong>Scope.</strong> This is a patch-status / configuration check, not a vulnerability
     probe: it never sends exploit-shaped requests (no session cookie, no file part, no
     upload-progress field, no stalling). Results live only in your browser session — there is no
-    export endpoint; the tested URL stays in the address bar as <code>?url=&hellip;</code> for
+    export endpoint; the tested URL stays in the address bar as <code>?&hellip;</code> for
     bookmarking/sharing and is never sent anywhere. Every submission and every poll
     solves a small proof-of-work in your browser (an abuse brake, ~1s once per check).
     Definitive fix = a patched PHP runtime.</p>
@@ -213,7 +213,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.9";
+const BUILD = "2026-10-21.10";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -537,7 +537,7 @@ function render(f) {
   // header: plain black anchor pointing back at THIS check (the #url hash) —
   // not an outbound link to the scanned site
   const urlHtml = /^https?:\/\//i.test(f.url)
-    ? '<a class="selflink" href="?url=' + niceParam(f.url)
+    ? '<a class="selflink" href="?' + niceParam(f.url)
       + '" title="Link to this check">' + esc(f.url) + '</a>'
     : esc(f.url);
   $('resurl').innerHTML = urlHtml;
@@ -741,12 +741,11 @@ async function run(force, urlOverride) {
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = 'https://' + url;
   if (!/^https?:\/\//i.test(url)) { $('progtext').textContent = 'http/https URLs only'; return; }
   lastUrl = url;
-  // shareable state in a REAL query param (lets link previews render an OG
-  // image server-side). pushState = no reload on Enter; back button walks
-  // previous checks. Nicer form: scheme + trailing slash stripped, '&' shown
-  // as '~'. The URL is still only in the address bar, never sent anywhere
-  // by this page itself.
-  try { history.pushState(null, '', '?url=' + niceParam(url)); }
+  // shareable state: the query string after "?" IS the checked URL (scheme
+  // and trailing slash stripped, '&' shown as '~'). pushState = no reload on
+  // Enter; back button walks previous checks. The URL is still only in the
+  // address bar, never sent anywhere by this page itself.
+  try { history.pushState(null, '', '?' + niceParam(url)); }
   catch (_) { try { location.hash = '#' + encodeURIComponent(url); } catch (_e) {} }
   running = true;
   controller = new AbortController();
@@ -851,12 +850,20 @@ $('recheck').addEventListener('click', () => run(true, lastUrl));
 loadReleases();
 setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
 
-// shareable results: open with ?url=<u> (or legacy #<u>) to pre-fill and run
+// shareable results: open with ?<url> (legacy ?url=<url> links are rewritten
+// in place; old #<url> hash links still work) to pre-fill and run
 (function fromParam() {
   let u = '';
-  const m = /[?&]url=([^&]*)/.exec(location.search || '');
+  const s = String(location.search || '');
+  const m = /[?&]url=([^&]*)/.exec(s);
   if (m) {
+    // legacy ?url= share: rewrite the address bar to the bare ?<url> form
     try { u = decodeURIComponent(m[1].replace(/~/g, '%26')).trim(); } catch (_) { u = ''; }
+    if (u) {
+      try { history.replaceState(null, '', '?' + niceParam(u)); } catch (_) {}
+    }
+  } else if (s.length > 1) {
+    try { u = decodeURIComponent(s.slice(1).replace(/~/g, '%26')).trim(); } catch (_) { u = ''; }
   }
   if (!u && location.hash) {
     try { u = decodeURIComponent(location.hash.slice(1)); } catch (_) { u = ''; }
