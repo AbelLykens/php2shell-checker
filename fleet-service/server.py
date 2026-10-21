@@ -1495,18 +1495,25 @@ def _blk_preview(facts):
                 "text": "no request-body processing (405/501 on "
                         + "+".join(m for m, _ in mps) + ")"
                         + (tail or " — static hosting likely")}
-    all_redir = all(300 <= st(p) < 400
-                    for p in [ue] + [p for _, p in mps])
-    if all_redir:
-        return {"cls": "info", "static": True,
-                "text": "all requests redirected (3xx)"
-                        + (tail or " — redirect endpoint")}
+    def and_list(a):
+        return a[0] if len(a) < 2 else ", ".join(a[:-1]) + " and " + a[-1]
+
     through = [m for m, p in mps if is_through(p)]
     if through:
-        ms = through[0] if len(through) < 2 \
-            else ", ".join(through[:-1]) + " and " + through[-1]
         return {"cls": "bad",
-                "text": "NOT BLOCKED — test uploads were accepted on " + ms}
+                "text": "NOT BLOCKED — test uploads were accepted on "
+                        + and_list(through)}
+    # a redirect is NOT a block (PHP parses the body before the app's 3xx;
+    # 301/302/303 follow-ups are GETs) - never green/static
+    redir = [m for m, p in mps if 300 <= st(p) < 400]
+    if redir:
+        if php_ev:
+            return {"cls": "bad",
+                    "text": "NOT BLOCKED — test uploads were redirected, "
+                            "not blocked, on " + and_list(redir)}
+        return {"cls": "info",
+                "text": "INCONCLUSIVE — test uploads were redirected on "
+                        + and_list(redir)}
     if is_through(ue):
         return {"cls": "ok", "text": "active (multipart rejected on "
                 + ("POST+PUT+PATCH" if len(mps) == 3 else "POST") + ", likely before PHP)"}
@@ -1518,10 +1525,6 @@ def _blk_preview(facts):
                 "text": "WAF assumed (%s on GET+%s)"
                         % (gst, "+".join(m for m, _ in mps))}
     rej = ", ".join("%s %s" % (m, st(p)) for m, p in mps)
-    if any(300 <= st(p) < 400 for _, p in mps):
-        return {"cls": "info",
-                "text": "uploads redirected, not accepted (%s) — cannot tell "
-                        "remotely whether PHP read them" % rej}
     return {"cls": "info",
             "text": "all rejected (%s) — edge vs app-level indistinguishable remotely"
                     % rej}

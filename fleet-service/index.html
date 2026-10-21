@@ -263,7 +263,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.30";
+const BUILD = "2026-10-21.31";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -368,14 +368,6 @@ function blockDimension(facts) {
   if (all405) return { cls: 'info', static: true,
     text: 'no request-body processing (405/501 on ' + mps.map(function (e) { return e[0]; }).join('+')
       + ')' + (phpEvidence ? ' — PHP present, version unknown' : ' — static hosting likely') };
-  const allRedirect = [ue].concat(mps.map(function (e) { return e[1]; })).every(p => {
-    const s = st(p);
-    return s >= 300 && s < 400;
-  });
-  if (allRedirect) {
-    return { cls: 'info', static: true,
-      text: 'all requests redirected (3xx)' + (phpEvidence ? ' — PHP present, version unknown' : ' — redirect endpoint') };
-  }
   // multipart reached the backend on ANY method (blocking POST alone is not enough)
   const through = mps.filter(([m, p]) => isMultipartThrough(p));
   if (through.length) {
@@ -393,8 +385,24 @@ function blockDimension(facts) {
     return { cls: 'bad', why,
       text: 'NOT BLOCKED \u2014 test uploads were accepted on ' + andList(through.map(e => e[0])) };
   }
+  // a redirect is NOT a block: a PHP front controller parses the multipart
+  // body BEFORE its code issues the 3xx, and 301/302/303 turn the follow-up
+  // into a GET, so the destination never saw an upload. Never green/static.
+  const redir = mps.filter(([m, p]) => st(p) >= 300 && st(p) < 400);
+  if (redir.length) {
+    const ms = andList(redir.map(e => e[0]));
+    const dest = bareDomain(hostOf((redir[0][1] || {}).final_url));
+    const orig = bareDomain(hostOf(facts.url));
+    if (phpEvidence) return { cls: 'bad',
+      text: 'NOT BLOCKED \u2014 test uploads were redirected, not blocked, on ' + ms,
+      why: 'PHP reads an upload before the page code runs, so a redirect from a PHP site is no protection \u2014 see Technical info' };
+    return { cls: 'info',
+      text: 'INCONCLUSIVE \u2014 test uploads were redirected on ' + ms,
+      why: 'a redirect is not a block, and the destination was not tested with an upload'
+        + (dest && dest !== orig ? ' \u2014 check ' + dest + ' itself' : '') };
+  }
   // multipart rejected wherever we probed it
-  if (isMultipartThrough(ue) && !through.length) {
+  if (isMultipartThrough(ue)) {
     // asymmetric rejection on POST = a content-type rule fired, likely before
     // PHP ever parsed the body
     return { cls: 'ok', text: 'active (multipart rejected' + (mps.length === 3 ? ' on POST+PUT+PATCH' : ' on POST') + ', likely before PHP)' };
@@ -409,10 +417,6 @@ function blockDimension(facts) {
     return { cls: 'warn', waf: true, text: 'WAF assumed (' + gst + ' on GET+' + mps.map(([m]) => m).join('+') + ')' };
   }
   const rej = mps.map(([m, p]) => m + ' ' + st(p)).join(', ');
-  // uploads redirected (3xx) without landing on a 2xx: not "rejected", but
-  // not proof the body was parsed either
-  if (mps.some(([_, p]) => st(p) >= 300 && st(p) < 400))
-    return { cls: 'info', text: 'uploads redirected, not accepted (' + rej + ') — cannot tell remotely whether PHP read them' };
   return { cls: 'info', text: 'all rejected (' + rej + ') — edge vs app-level indistinguishable remotely' };
 }
 
