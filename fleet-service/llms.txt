@@ -27,6 +27,10 @@ defenses against CVE-2026-109618/619 are observable from the outside:
   rule (WAF/CDN) before a parser sees it.
 - ASSUMED VULNERABLE (red): multipart requests reach the backend and no
   patched runtime could be confirmed.
+- (PROBABLY) NOT VULNERABLE (green): PHP runs on the site, but POST/PUT/PATCH
+  all got 405/501 and none of those 405 responses carry a PHP sign (session
+  cookie, X-Powered-By) — refused before PHP parsed the body. A 405 that DOES
+  carry a PHP sign came from PHP itself, after parsing: ASSUMED VULNERABLE.
 - NO PHP DETECTED (green): nothing POST-shaped is processed and there are
   zero PHP indicators (no banner, no session cookie) — consistent with a
   static site; nothing to exploit at that URL.

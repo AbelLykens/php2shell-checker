@@ -1491,10 +1491,22 @@ def _blk_preview(facts):
     all405 = all(st(p) in (405, 501)
                  for p in [ue] + [p for _, p in mps])
     if all405:
+        ms = "+".join(m for m, _ in mps)
+        # PHP signs ON the 405s = PHP generated it, after parsing the upload
+        signed = [m for m, p in mps
+                  if p.get("php_session_cookie") or p.get("x_powered_by")]
+        if signed:
+            sl = signed[0] if len(signed) < 2 \
+                else ", ".join(signed[:-1]) + " and " + signed[-1]
+            return {"cls": "bad", "php405": True,
+                    "text": "NOT BLOCKED — PHP itself answered 405 on " + sl}
+        if php_ev:
+            return {"cls": "ok", "static": True, "not_vuln": True,
+                    "text": "uploads refused with 405 before PHP saw them (%s)"
+                            % ms}
         return {"cls": "info", "static": True,
-                "text": "no request-body processing (405/501 on "
-                        + "+".join(m for m, _ in mps) + ")"
-                        + (tail or " — static hosting likely")}
+                "text": "no request-body processing (405/501 on %s)"
+                        " — static hosting likely" % ms}
     def and_list(a):
         return a[0] if len(a) < 2 else ", ".join(a[:-1]) + " and " + a[-1]
 
@@ -1546,10 +1558,14 @@ def _verdict_preview(facts, releases):
         return "EXPOSED", "bad", php, blk
     if php["cls"] == "bad":
         return "UNPATCHED", "bad", php, blk
+    if blk and blk.get("not_vuln"):
+        return ("PATCHED" if php["cls"] == "ok"
+                else "(PROBABLY) NOT VULNERABLE"), "ok", php, blk
     if blk and blk["cls"] == "ok":
         return "BLOCKED", "ok", php, blk
     if blk and blk["cls"] == "bad":
-        if g.get("php_session_cookie") or g.get("x_powered_by"):
+        if g.get("php_session_cookie") or g.get("x_powered_by") \
+                or blk.get("php405"):
             return "ASSUMED VULNERABLE", "bad", php, blk
         return "UNKNOWN", "info", php, blk
     if (blk and blk.get("static") and php["cls"] == "info"

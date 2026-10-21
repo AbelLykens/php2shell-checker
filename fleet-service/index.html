@@ -215,7 +215,7 @@
             <li><b>X-Powered-By / Server header</b>: Look for PHP version info (fixed releases: 8.2.35+, 8.3.36+, 8.4.27+, 8.5.12+).</li>
             <li><b>Multipart 403 / 406 while urlencoded succeeds (200/302/405)</b>: Multipart is blocked by WAF/CDN/web server rule before PHP processes it (<b>BLOCKED</b>).</li>
             <li><b>Multipart 200 / 3xx</b>: Multipart request body reaches the application (<b>ASSUMED VULNERABLE</b> if unpatched).</li>
-            <li><b>All 405 Method Not Allowed</b>: Route rejects body payloads entirely (<b>NO PHP DETECTED</b> if no PHP indicators).</li>
+            <li><b>All 405 Method Not Allowed</b>: if the 405 responses carry no PHP signs (no PHPSESSID cookie, no X-Powered-By) the server refused before PHP (<b>(PROBABLY) NOT VULNERABLE</b>, or <b>NO PHP DETECTED</b> without any PHP indicators). A 405 that sets a PHP session cookie came from PHP itself, after it read the upload (<b>ASSUMED VULNERABLE</b>).</li>
           </ul>
         </div>
       </div>
@@ -263,7 +263,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.34";
+const BUILD = "2026-10-21.35";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -365,9 +365,22 @@ function blockDimension(facts) {
   // body; with zero PHP indicators that usually means static hosting
   const all405 = [ue].concat(mps.map(function (e) { return e[1]; }))
     .every(p => st(p) === 405 || st(p) === 501);
-  if (all405) return { cls: 'info', static: true,
-    text: 'no request-body processing (405/501 on ' + mps.map(function (e) { return e[0]; }).join('+')
-      + ')' + (phpEvidence ? ' — PHP present, version unknown' : ' — static hosting likely') };
+  if (all405) {
+    const ms = mps.map(function (e) { return e[0]; }).join('+');
+    // who said 405? PHP signs ON the 405 responses (session cookie /
+    // X-Powered-By) = PHP generated it, i.e. after it parsed the upload
+    const signed = mps.filter(([m, p]) => p.php_session_cookie || p.x_powered_by);
+    if (signed.length) return { cls: 'bad', php405: true,
+      text: 'NOT BLOCKED \u2014 PHP itself answered 405 on ' + andList(signed.map(e => e[0])),
+      why: 'the 405 carries a PHP ' + (signed[0][1].php_session_cookie ? 'session cookie' : 'X-Powered-By header')
+        + ', so PHP read the upload before refusing it \u2014 see Technical info' };
+    // PHP is on the site but the 405s carry no PHP signs: the web server /
+    // edge refused the method before PHP saw the body
+    if (phpEvidence) return { cls: 'ok', static: true, notVuln: true,
+      text: 'uploads refused with 405 before PHP saw them (' + ms + ')' };
+    return { cls: 'info', static: true,
+      text: 'no request-body processing (405/501 on ' + ms + ') — static hosting likely' };
+  }
   // multipart reached the backend on ANY method (blocking POST alone is not enough)
   const through = mps.filter(([m, p]) => isMultipartThrough(p));
   if (through.length) {
@@ -433,12 +446,13 @@ function interpret(facts) {
   else if (blk && blk.waf) { cls = 'warn'; label = 'TEST BLOCKED'; }
   else if (php.cls === 'bad' && blk && blk.cls === 'bad') { cls = 'bad'; label = 'EXPOSED'; }
   else if (php.cls === 'bad') { cls = 'bad'; label = 'UNPATCHED'; }
+  else if (blk && blk.notVuln) { cls = 'ok'; label = php.cls === 'ok' ? 'PATCHED' : '(PROBABLY) NOT VULNERABLE'; }
   else if (blk && blk.cls === 'ok') { cls = 'ok'; label = 'BLOCKED'; }
   // multipart-family requests flow through: if confirmed PHP indicators exist,
   // assume vulnerable until a patched PHP version is verified; without PHP indicators,
   // report unknown (less confident)
   else if (blk && blk.cls === 'bad') {
-    if (g.php_session_cookie || g.x_powered_by) {
+    if (g.php_session_cookie || g.x_powered_by || blk.php405) {
       cls = 'bad'; label = 'ASSUMED VULNERABLE';
     } else {
       cls = 'info'; label = 'UNKNOWN';
@@ -560,8 +574,16 @@ function explainVerdict(f, v) {
       advice = 'High risk: apply edge rules blocking multipart bodies where unneeded, disable session.upload_progress in php.ini, and patch PHP.';
       break;
 
+    case '(PROBABLY) NOT VULNERABLE':
+      summary = 'PHP runs on this site, but upload-style requests were refused with 405 before PHP saw them.';
+      details = 'POST, PUT and PATCH all got 405/501, and none of those 405 responses carry a PHP sign (no PHP session cookie, no X-Powered-By): the web server or edge refused the method before PHP parsed any body. Other URLs on the same host may still accept uploads.';
+      advice = 'Likely fine at this URL. Still patch PHP or set session.upload_progress.enabled = Off, since other routes may accept POST.';
+      break;
+
     case 'ASSUMED VULNERABLE':
-      summary = 'PHP presence is confirmed (session cookie / banner) and multipart payloads reach the application backend.';
+      summary = blk && blk.php405
+        ? 'PHP itself answered 405 to the upload-style requests, so it had already read the upload.'
+        : 'PHP presence is confirmed (session cookie / banner) and multipart payloads reach the application backend.';
       details = 'Requests with multipart content types are accepted without edge-level blocking. Because the specific PHP version cannot be confirmed as patched, the service assumes vulnerability.';
       advice = 'Verify host PHP version directly on the server (php -v). If unpatched, update PHP or set session.upload_progress.enabled = Off.';
       break;
