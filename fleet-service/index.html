@@ -126,6 +126,15 @@
   table.tech th { background: var(--code); font-weight: 600; }
   table.tech td:first-child { white-space: nowrap; }
   .dimlabel { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; min-width: 92px; }
+  /* result card: one fixed label column so every value starts at the same x
+     (fits "VULNERABILITY CHECK"); phones stack label above value */
+  .resrow > .dimlabel { flex: 0 0 152px; white-space: nowrap; }
+  @media (max-width: 520px) {
+    .resrow { flex-wrap: wrap; gap: 2px 10px; }
+    .resrow > .dimlabel { flex-basis: 100%; }
+  }
+  /* redirect end host after the "→" in the result header: underlined link */
+  .redir a.selflink { text-decoration: underline; text-underline-offset: 2px; }
   #verdict .chip { font-size: 13px; }
   #go { min-width: 140px; }   /* stays stable when text switches to Re-check / countdown */
   #techcard > summary { margin-top: 12px; }   /* expandible inside the result card */
@@ -160,7 +169,6 @@
       <span class="mono" id="resurl"></span>
     </div>
     <div class="small mono" id="testdate" hidden style="margin-top:4px"></div>
-    <div class="resrow" id="row_endpoint" hidden><span class="dimlabel">endpoint</span> <span class="mono small" id="dimendpoint"></span></div>
     <div class="resrow"><span class="dimlabel">verdict</span> <span id="verdict"></span></div>
     <div class="resrow"><span class="dimlabel">PHP banner</span> <span id="dimphp"></span></div>
     <div class="resrow"><span class="dimlabel">vulnerability check</span> <span id="dimblk"></span></div>
@@ -251,7 +259,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.28";
+const BUILD = "2026-10-21.29";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -763,18 +771,6 @@ function render(f) {
     // test are all port-insensitive (share links are bare domains)
     const endHost = bareDomain(hostOf(redirProbe.final_url));
     const origHost = bareDomain(hostOf(f.url));
-    const hasRedir = (redirProbe.redirects | 0) > 0 && redirProbe.final_url && redirProbe.final_url !== f.url;
-
-    if (hasRedir) {
-      $('row_endpoint').hidden = false;
-      const cleanEnd = noDefaultPort(redirProbe.final_url);
-      $('dimendpoint').innerHTML = '<a class="selflink" href="/' + niceParam(endHost || cleanEnd)
-        + '" title="Check destination endpoint">' + esc(cleanEnd) + '</a>'
-        + ' <span style="color:var(--muted)">(' + (redirProbe.redirects | 0) + ' redirect' + (redirProbe.redirects > 1 ? 's' : '') + ')</span>';
-    } else {
-      $('row_endpoint').hidden = true;
-    }
-
     if (endHost && origHost && endHost !== origHost && (redirProbe.redirects | 0) > 0) {
       redirHtml = ' <span class="redir">→ <a class="selflink" href="/'
         + niceParam(endHost) + '" title="redirected ' + (redirProbe.redirects | 0)
