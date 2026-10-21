@@ -8,17 +8,17 @@ a PHP `session.upload_progress` use-after-free). Live instance:
 
 | Path | What it is |
 |---|---|
-| `fleet-service/` | The public checker: stdlib-only Python service + single-page browser UI. Probes any URL you submit with **eight inert requests** and reports which defenses against the CVE are observable: version banner vs the patched list (8.2.35 / 8.3.36 / 8.4.27 / 8.5.12), multipart reachability on POST/PUT/PATCH, and a session-fixation probe (a random `PHPSESSID` **form field** — never an upload-progress field, never a file part, so the vulnerable code path is never engaged). PoW-gated, one URL at a time, results cached and shared between visitors. |
-| `client-check/` | Same-origin self-check kit: drop-in HTML + a benign PHP target to verify your own host from your own browser. |
-| `detections/` | SIEM/EDR telemetry (Elastic queries) to catch *real* exploitation attempts on your hosts. |
-| `php2shell-poc/` | The research POC (separate repo and remote, not part of this repo). |
+| `fleet-service/server.py` | The checker backend: stdlib-only Python service. Probes any URL you submit with **eight inert requests** and reports which defenses against the CVE are observable: version banner vs the patched list (8.2.35 / 8.3.36 / 8.4.27 / 8.5.12), multipart reachability on POST/PUT/PATCH, and a session-fixation probe (a random `PHPSESSID` **form field** — never an upload-progress field, never a file part, so the vulnerable code path is never engaged). PoW-gated, one URL at a time, results cached and shared between visitors. |
+| `fleet-service/index.html` | The single-page browser UI. |
+| `fleet-service/llms.txt` | Verdicts, honest limits, and the JSON API — also served at `/llms.txt`. |
+
+The research POC lives in a separate repo and is not part of this one.
 
 ## Verdicts
 
 `PATCHED` · `UNPATCHED` · `BLOCKED` · `ASSUMED VULNERABLE` ·
 `NO PHP DETECTED` · `OFFLINE` · `UNKNOWN` — exact meanings and the honesty
 limits of remote checking live in
-[`fleet-service/README.md`](fleet-service/README.md) and
 [`fleet-service/llms.txt`](fleet-service/llms.txt).
 
 ## Scanned-URL rules
@@ -40,5 +40,4 @@ a vulnerability assessment; verify on the host.
 ## Self-host
 
     cd fleet-service
-    python3 test_e2e.py            # 101 checks, mock origins included
     python3 server.py --port 8971  # then put TLS in front (nginx/caddy)

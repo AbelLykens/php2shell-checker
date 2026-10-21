@@ -1,7 +1,7 @@
 # SSH keys for git remotes — NEVER commit
 .ssh-keys/
 
-# separate git repo with its own remote (php2shell-poc (separate repo))
+# separate git repo with its own remote (not part of this repo)
 php2shell-poc/
 
 # 42 MB build artifacts, not repo material
@@ -11,3 +11,11 @@ php-up-2026/
 # runtime junk
 *.pyc
 __pycache__/
+
+# local-only ops material — public repo stays minimal (server + frontend only)
+AGENTS.md
+TASKS.md
+detections/
+client-check/
+fleet-service/README.md
+fleet-service/test_e2e.py

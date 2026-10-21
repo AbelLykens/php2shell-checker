@@ -69,5 +69,5 @@ to check the same URL gets the cached result.
 The service never sends: session cookies, PHP_SESSION_UPLOAD_PROGRESS fields,
 file parts, oversized/stalling bodies, or any exploit payload. It only observes
 banners, statuses, redirect behavior and Set-Cookie echo. Telemetry: the
-probes identify as a scanner UA and are documented in the project's
-detections/ notes for SOC filtering.
+probes identify as a scanner UA and their exact request shapes are documented
+above, so SOC teams can filter them.
