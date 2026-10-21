@@ -1720,7 +1720,7 @@ def _blk_preview(facts):
     redir = [m for m, p in mps if 300 <= st(p) < 400]
     if redir:
         if php_ev:
-            return {"cls": "bad",
+            return {"cls": "bad", "redir": True,
                     "text": "NOT BLOCKED — test uploads were redirected, "
                             "not blocked, on " + and_list(redir),
                     "why": "PHP reads an upload before the page code runs; "
@@ -1729,7 +1729,7 @@ def _blk_preview(facts):
                                 if 300 <= st(p) < 400), ""))
         orig = _host_bare(facts.get("url"))
         third = dest and dest != orig and _site_of(dest) != _site_of(orig)
-        return {"cls": "info",
+        return {"cls": "info", "redir": True,
                 "text": "INCONCLUSIVE — test uploads were redirected on "
                         + and_list(redir),
                 "why": ("they went to a third-party page (%s); the site itself "
@@ -1762,7 +1762,7 @@ def _blk_preview(facts):
                         "(%s on GET+%s)" % (gst, "+".join(m for m, _ in mps))}
     if any(st(p) == 429 for _, p in mps):
         return {"cls": "info", "text": "rate-limited (429) — try again later"}
-    return {"cls": "info", "text": "uploads refused (%s)" % rej,
+    return {"cls": "info", "refused": True, "text": "uploads refused (%s)" % rej,
             "why": "can't tell from outside whether before or after PHP read "
                    "them — not proof of protection"}
 
@@ -1832,14 +1832,95 @@ def redirect_dest(facts):
     return b if 200 <= (g.get("status") or 0) < 300 else None
 
 
+# ---- "if PHP / if not PHP" (mirror of the client's notPhpHints/dualVerdict)
+_NOT_PHP_XPB = ((r"next\.js", "Next.js (Node)"), (r"express", "Express (Node)"),
+                (r"\bnode\b", "Node.js"), (r"asp\.net", "ASP.NET"),
+                (r"servlet|jsf|jsp|undertow", "Java"), (r"kphp", "KPHP (not the PHP engine)"),
+                (r"hhvm", "HHVM (not the PHP engine)"), (r"phusion|passenger", "Passenger (Ruby/Node)"))
+_NOT_PHP_SERVER = ((r"kestrel", "ASP.NET (Kestrel)"), (r"(jetty|apache-coyote|tomcat|wildfly)", "Java"),
+                   (r"(gunicorn|uvicorn|granian|hypercorn|werkzeug|waitress|daphne)", "Python"),
+                   (r"amazons3", "static files (S3)"), (r"cowboy", "Erlang/Elixir"),
+                   (r"(github\.com|netlify)", "static hosting"))
+_NOT_PHP_COOKIE = ((r"jsessionid$", "Java"),
+                   (r"(asp\.net_sessionid|\.aspnetcore\..*|\.aspxauth|aspxauth)$", "ASP.NET"),
+                   (r"connect\.sid$", "Node (Express)"), (r"csrftoken$", "Django (Python)"),
+                   (r"rack\.session$", "Ruby (Rack)"), (r"_[a-z0-9_]+_session$", "Ruby on Rails"))
+
+
+def _not_php_hints(facts):
+    """Signs AGAINST PHP (another runtime named) on this site's own responses.
+    Front ends (ESF, proxygen, CDNs) are deliberately not hints."""
+    home = _site_of(_host_bare(facts.get("url")))
+    out = []
+
+    def add(what, stack):
+        if all(w != what for w, _s in out):
+            out.append((what, stack))
+    for k, _lab in _PROBE_LABELS:
+        p = facts.get(k)
+        if not p or "error" in p or p.get("skipped"):
+            continue
+        if (p.get("redirects") or 0) > 0 and p.get("final_url") \
+                and _site_of(_host_bare(p["final_url"])) != home:
+            continue
+        x, sv = str(p.get("x_powered_by") or ""), str(p.get("server") or "")
+        if x and not _is_php_xpb(x):
+            for rx, st in _NOT_PHP_XPB:
+                if re.search(rx, x, re.I):
+                    add("X-Powered-By: " + x, st)
+                    break
+        for rx, st in _NOT_PHP_SERVER:
+            if re.match(rx, sv, re.I):
+                add("Server: " + sv, st)
+                break
+        if p.get("x_aspnet_version"):
+            add("X-AspNet-Version", "ASP.NET")
+        for c in p.get("cookie_names") or []:
+            for rx, st in _NOT_PHP_COOKIE:
+                if re.match(rx, c, re.I):
+                    add("cookie " + c, st)
+                    break
+    return out
+
+
+def dual_verdict(facts, releases):
+    """When the answer hinges only on whether the site runs the PHP engine:
+    {"if_php": (label, cls), "if_not": (label, cls), "likely": "notphp"|"",
+    "hints": [...]}; else None."""
+    label, _cls, php, blk = _verdict_preview(facts, releases)
+    if bool(_php_signs(facts)) or not blk or php["cls"] == "bad":
+        return None
+    if blk["cls"] == "bad" and not blk.get("redir"):
+        if_php = ("ASSUMED VULNERABLE", "bad")
+    elif label == "BLOCKED":
+        if_php = ("MITIGATED — UPDATE STILL NEEDED", "ok")
+    elif blk.get("refused"):
+        if_php = ("INCONCLUSIVE", "warn")
+    else:
+        return None
+    hints = _not_php_hints(facts)
+    return {"if_php": if_php, "if_not": ("NOT AFFECTED", "ok"),
+            "likely": "notphp" if hints else "", "hints": hints}
+
+
 def finding_summary(facts, releases):
     """One line for link previews (og:description): verdict + the two
     findings, e.g. 'ASSUMED VULNERABLE — NOT BLOCKED — test uploads were
-    accepted on POST · PHP detected — version hidden'."""
+    accepted on POST · PHP detected — version hidden'; with the
+    "if PHP / if not" outcomes when the answer depends on the stack."""
     label, _cls, php, blk = _verdict_preview(facts, releases)
+    dv = dual_verdict(facts, releases)
+    if dv:
+        line = "%s — if PHP: %s · if not PHP: %s" % (
+            shown_label(label, False), dv["if_php"][0], dv["if_not"][0])
+        line += (" (likely not PHP: %s)" % dv["hints"][0][1]) if dv["likely"] \
+            else " (no PHP signs seen)"
+        return line if len(line) <= 200 else line[:199] + "…"
     bits = [shown_label(label, bool(_php_signs(facts)))]
     if blk:
-        bits.append(blk["text"])
+        # "INCONCLUSIVE — INCONCLUSIVE — ...": don't repeat the verdict word
+        bits = [blk["text"]] if blk["text"].startswith(bits[0] + " —") \
+            else bits + [blk["text"]]
     line = " — ".join(bits) + " · " + php["text"]
     return line if len(line) <= 200 else line[:199] + "…"
 
@@ -1997,12 +2078,39 @@ def og_png(facts, releases, via=None):
 
             y = section(y, "VERDICT", shown_label(label, bool(_php_signs(facts))), cls,
                         f_verdict, None)
-            y = section(y, "PHP detection", php["text"], php["cls"], f_chip,
-                        php.get("why"))
+            dv = dual_verdict(facts, releases)
+            if dv:
+                # two columns like the page: "if PHP" / "if not", likely one
+                # outlined; replaces the PHP detection row (its line says it)
+                accent = (122, 167, 222)
+                w = (mx - 40 - 16) // 2   # stays inside the card frame
+                cols = (("IF THIS SITE RUNS PHP", dv["if_php"], dv["likely"] == "php"),
+                        ("IF IT DOESN'T", dv["if_not"], dv["likely"] == "notphp"))
+                bh = 0
+                for i, (head, (lab, ccls), likely) in enumerate(cols):
+                    x = 80 + i * (w + 16)
+                    d.text((x + 12, y + 10), head, font=f_lab, fill=_OG_C["muted"])
+                    if likely:
+                        hx = x + 12 + int(d.textlength(head + "  ", font=f_lab))
+                        d.text((hx, y + 10), "\u2190 likely", font=f_lab, fill=accent)
+                    ch = _og_chip(d, x + 12, y + 40, lab, _OG_C[ccls], f_chip, w - 24)
+                    bh = max(bh, 40 + ch + 12)
+                for i, (_h, _o, likely) in enumerate(cols):
+                    x = 80 + i * (w + 16)
+                    d.rectangle([x, y, x + w, y + bh], outline=accent if likely else _OG_C["border"],
+                                width=3 if likely else 2)
+                y += bh + 8
+                hint = ("likely not PHP: " + "; ".join("%s \u2192 %s" % h for h in dv["hints"])
+                        if dv["likely"] else "no PHP signs seen \u2014 check which runtime your site uses")
+                d.text((82, y), _og_text_fit(d, hint, f_why, mx - 4), font=f_why, fill=_OG_C["muted"])
+                y += 30 + 14
+            else:
+                y = section(y, "PHP detection", php["text"], php["cls"], f_chip,
+                            php.get("why"))
             btxt = blk["text"] if blk else "not tested"
             y = section(y, "vulnerability check", btxt,
                         blk["cls"] if blk else "info", f_chip,
-                        (blk or {}).get("why"), lines=2 if y < 420 else 1)
+                        (blk or {}).get("why"), lines=2 if (y < 420 and not dv) else 1)
             fa = facts.get("fetched_at")
             foot = ("tested %s UTC · " % time.strftime("%Y-%m-%d %H:%M", time.gmtime(fa))
                     if fa else "") + "php2shell.site · CVE-2026-109618/619"
