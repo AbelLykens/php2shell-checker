@@ -1920,7 +1920,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/finding":
                 # Instant key-authenticated finding lookup without PoW
                 q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-                domain = (q.get("domain") or [""])[0]
+                domain = (q.get("domain") or [""])[0].lower().strip()
                 key = (q.get("key") or [""])[0]
                 if not domain or not key:
                     return self._json({"error": "domain and key required"}, 400)
