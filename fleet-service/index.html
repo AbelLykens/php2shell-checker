@@ -250,7 +250,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.22";
+const BUILD = "2026-10-21.23";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -480,6 +480,88 @@ function renderRecheck() {
 }
 setInterval(function () { renderTestDate(); renderRecheck(); }, 1000);
 
+/* explain the verdict clearly in human-readable templated sentences */
+function explainVerdict(f, v) {
+  const g = f.get || {};
+  const label = v ? v.label : 'UNKNOWN';
+  let summary = '', details = '', advice = '';
+
+  switch (label) {
+    case 'PATCHED':
+      summary = 'The server explicitly advertises a patched PHP version banner (' + (v.php ? esc(v.php.text) : 'fixed release') + ').';
+      details = 'External banner probing confirmed a runtime version at or above the vendor security fix for CVE-2026-109618/619.';
+      advice = 'No mitigation action required if the advertised banner matches the actual backend execution environment.';
+      break;
+
+    case 'UNPATCHED':
+      summary = 'The server advertises an unpatched PHP version banner (' + (v.php ? esc(v.php.text) : 'vulnerable branch') + ').';
+      details = 'The reported PHP version is below the fixed releases (8.2.35, 8.3.36, 8.4.27, 8.5.12) or belongs to an end-of-life (EOL) branch without official security fixes.';
+      advice = 'Upgrade PHP immediately to the latest patched point release or disable session.upload_progress.';
+      break;
+
+    case 'BLOCKED':
+      summary = 'Multipart request bodies are rejected by an edge firewall / CDN / proxy before reaching PHP.';
+      details = 'Form-urlencoded requests were received normally, but multipart/form-data payloads were blocked (e.g. 403 Forbidden). This edge mitigation prevents upload-progress parsing.';
+      advice = 'Keep the WAF/CDN rule active and ensure origin servers cannot be accessed directly via origin IP bypass.';
+      break;
+
+    case 'EXPOSED':
+      summary = 'The server advertises an unpatched PHP version AND accepts multipart payloads without edge blocking.';
+      details = 'Both the version banner check and the multipart reachability test failed. Upload-style request bodies flow directly through to an unpatched PHP engine.';
+      advice = 'High risk: apply edge rules blocking multipart bodies where unneeded, disable session.upload_progress in php.ini, and patch PHP.';
+      break;
+
+    case 'ASSUMED VULNERABLE':
+      summary = 'PHP presence is confirmed (session cookie / banner) and multipart payloads reach the application backend.';
+      details = 'Requests with multipart content types are accepted without edge-level blocking. Because the specific PHP version cannot be confirmed as patched, the service assumes vulnerability.';
+      advice = 'Verify host PHP version directly on the server (php -v). If unpatched, update PHP or set session.upload_progress.enabled = Off.';
+      break;
+
+    case 'NO PHP DETECTED':
+      summary = 'No PHP presence detected and no request body processing occurs on this route.';
+      details = 'The target rejected POST, PUT, and PATCH methods (405/501 or dropped) with zero PHP banners or PHP session cookies, consistent with a static web server or CDN frontend.';
+      advice = 'Nothing to exploit at this specific endpoint under current configuration.';
+      break;
+
+    case 'OFFLINE':
+      summary = 'The host refused network connections on the probed port.';
+      details = 'ConnectionRefusedError or port closed. No HTTP service was reachable to inspect.';
+      advice = 'Verify if the domain has correct DNS records and is intended to run a public web service.';
+      break;
+
+    case 'TEST BLOCKED':
+      summary = 'A WAF or security shield blocked all test requests indiscriminately.';
+      details = 'Every probe (including initial GET) received edge block responses (403/406). The scanner could not reach the backend to evaluate defenses.';
+      advice = 'If testing your own infrastructure, allowlist the scanner IP to perform an accurate posture check.';
+      break;
+
+    case 'UNREACHABLE':
+      summary = 'Unable to establish a reliable HTTP connection with the target.';
+      details = 'Network timeouts, DNS resolution failures, or TLS handshake errors prevented analysis.';
+      advice = 'Check server availability, SSL/TLS certificate validity, and network routing.';
+      break;
+
+    case 'UNKNOWN':
+    default:
+      if (v && v.blk && v.blk.cls === 'bad' && !g.php_session_cookie && !g.x_powered_by) {
+        summary = 'Multipart requests are accepted, but no PHP indicators were found.';
+        details = 'The server accepts multipart payloads, but provides no PHP version banner or PHP session cookies. The backend may be running Python, Node.js, Go, Java, or PHP with custom headers.';
+        advice = 'If this service runs PHP behind a proxy, verify on the host whether PHP is on a patched release.';
+      } else {
+        summary = 'Inconclusive posture from external probing alone.';
+        details = 'Responses returned non-standard status codes or ambiguous error patterns that cannot be definitively classified remotely.';
+        advice = 'Inspect web server logs and host-level PHP configuration directly.';
+      }
+      break;
+  }
+
+  return '<div style="margin-top:10px;padding:10px 12px;background:var(--code);border-left:3px solid var(--accent);border-radius:2px">'
+    + '<div style="font-weight:600;font-size:12.5px;color:var(--fg);margin-bottom:4px">Conclusion: ' + esc(summary) + '</div>'
+    + '<div class="small" style="line-height:1.5;margin-bottom:4px">' + esc(details) + '</div>'
+    + '<div class="small" style="line-height:1.5"><b style="color:var(--fg)">Actionable advice:</b> ' + esc(advice) + '</div>'
+    + '</div>';
+}
+
 /* the expandible Technical info panel: everything we already know, readable */
 function techInfo(f, v) {
   const g = f.get || {};
@@ -556,6 +638,7 @@ function techInfo(f, v) {
   if (g.content_type) hdrs.push('Content-Type: ' + esc(g.content_type));
   if (g.php_session_cookie) hdrs.push('PHP session cookie set');
   return '<p class="small">' + meta.join(' · ') + '</p>'
+    + explainVerdict(f, v)
     + '<table class="tech"><tr><th>request</th><th>sent</th><th>response</th></tr>'
     + rows.join('') + '</table>'
     + (hdrs.length ? '<p class="small">GET response headers: ' + hdrs.join(' · ') + '</p>' : '');

@@ -253,8 +253,10 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
                allowlist=None):
     """One request with browser-like redirect following.
 
-    Up to max_redirects hops, each hop SSRF-guarded. 301/302/303 convert
-    POST->GET (as browsers and curl -L do); 307/308 keep method and body.
+    Up to max_redirects hops, each hop SSRF-guarded. On redirect we MUST strip
+    the URL (paths, query parameters, fragments) and follow only domains/hosts
+    (bare root /). 301/302/303 convert POST->GET (as browsers and curl -L do);
+    307/308 keep method and body.
     Returns raw facts: final status, first-hop status (what the edge did to
     the ORIGINAL request - verdicts use this, so a later app-level 403 on a
     redirected GET can never fake an "edge block"), redirect count, final
@@ -281,6 +283,7 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
             _guard_url(current, cfg, allowlist)
         except ProbeError as e:
             return _err(str(e))
+        seen.add(current.rstrip("/"))
         h = {"User-Agent": cfg["user_agent"]}
         if headers and sent_data is not None:
             # caller headers (Content-Type) describe the body; resend them on
@@ -311,11 +314,17 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
             first_status = status
         loc = hdrs.get("location")
         if follow and 300 <= status < 400 and loc and hops < cfg["max_redirects"]:
-            nxt = urllib.parse.urljoin(current, loc)
-            if (nxt in seen
-                    or urllib.parse.urlsplit(nxt).scheme not in ("http", "https")):
-                break  # redirect loop or non-http target: report what we have
-            seen.add(current)
+            raw_nxt = urllib.parse.urljoin(current, loc)
+            sp = urllib.parse.urlsplit(raw_nxt)
+            if sp.scheme not in ("http", "https") or not sp.netloc:
+                break  # non-http target or malformed: report what we have
+            scheme = sp.scheme.lower()
+            if not cfg.get("allow_http", False) and scheme == "http":
+                scheme = "https"
+            # Strip path, query parameters and fragment - just follow domains at bare root /
+            nxt = urllib.parse.urlunsplit((scheme, sp.netloc.lower(), "/", "", ""))
+            if nxt.rstrip("/") in seen:
+                break  # redirect loop, already visited domain, or redirected to same domain
             if status in (301, 302, 303):
                 sent_method, sent_data = "GET", None
             # 307/308 keep the method and body
@@ -1590,9 +1599,17 @@ def _norm_target(raw):
             return None
     else:
         u = "https://" + u
-    if len(u) > 2048 or not urllib.parse.urlsplit(u).netloc:
+    if len(u) > 2048:
         return None
-    return u
+    try:
+        sp = urllib.parse.urlsplit(u)
+    except Exception:
+        return None
+    if not sp.netloc:
+        return None
+    return urllib.parse.urlunsplit(
+        (sp.scheme.lower(), sp.netloc.lower(), sp.path or "", sp.query or "", sp.fragment or "")
+    )
 
 
 def og_png(facts, releases):
@@ -1805,7 +1822,7 @@ class Handler(BaseHTTPRequestHandler):
             raw_path = sp.path.lstrip("/").strip("/")
             parts = [p for p in raw_path.split("/") if p]
             # Check if this is /<domain>/<KEY16>
-            cand_domain = parts[0] if parts else ""
+            cand_domain = parts[0].lower() if parts else ""
             cand_key = parts[1] if len(parts) >= 2 else ""
             if len(cand_key) == 16 and cand_key.isalnum() and self.state.verify_finding_key(cand_domain, cand_key):
                 u = _norm_target(cand_domain)
