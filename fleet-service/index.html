@@ -250,7 +250,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.24";
+const BUILD = "2026-10-21.26";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -632,6 +632,15 @@ function techInfo(f, v) {
           f[m + '_multipart'], blkBad && reached(f[m + '_multipart']));
     }
   }
+  /* response column header names the END domain the responses came from
+     (after redirects; same probe priority as the result header: GET, then
+     the POST probes) — "→" marks a redirect onto a different host */
+  const endP = [f.get, f.post_urlencoded, f.post_multipart]
+    .find(p => p && (p.redirects | 0) > 0 && p.final_url) || g;
+  const endDom = bareDomain(hostOf(endP.final_url || f.url));
+  const origDom = bareDomain(hostOf(f.url));
+  const respHead = 'response' + (endDom ? ' <span class="mono" style="font-weight:400">'
+    + (origDom && endDom !== origDom ? '\u2192 ' : '') + esc(endDom) + '</span>' : '');
   const hdrs = [];
   if (g.server) hdrs.push('Server: ' + esc(g.server));
   if (g.x_powered_by) hdrs.push('X-Powered-By: ' + esc(g.x_powered_by));
@@ -639,7 +648,7 @@ function techInfo(f, v) {
   if (g.php_session_cookie) hdrs.push('PHP session cookie set');
   return '<p class="small">' + meta.join(' · ') + '</p>'
     + explainVerdict(f, v)
-    + '<table class="tech"><tr><th>request</th><th>sent</th><th>response</th></tr>'
+    + '<table class="tech"><tr><th>request</th><th>sent</th><th>' + respHead + '</th></tr>'
     + rows.join('') + '</table>'
     + (hdrs.length ? '<p class="small">GET response headers: ' + hdrs.join(' · ') + '</p>' : '');
 }
