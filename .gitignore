@@ -15,6 +15,7 @@ __pycache__/
 # local-only ops material — public repo stays minimal (server + frontend only)
 AGENTS.md
 TASKS.md
+ops/
 detections/
 client-check/
 fleet-service/README.md

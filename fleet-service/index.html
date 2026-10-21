@@ -220,7 +220,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.13";
+const BUILD = "2026-10-21.14";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -471,7 +471,7 @@ function techInfo(f, v) {
     if (p.proto) bits.push(p.proto);
     if (p.ms !== undefined) bits.push(p.ms + ' ms');
     let fin = '';
-    if (p.redirects && p.final_url) fin = '<div class="small">' + esc(p.final_url) + '</div>';
+    if (p.redirects && p.final_url) fin = '<div class="small">' + esc(noDefaultPort(p.final_url)) + '</div>';
     rows.push('<tr><td><b>' + label + '</b></td><td class="small">' + sent
       + '</td><td class="mono">' + pill(p, evidence) + (bits.length ? ' ' + esc(bits.join(' · ')) : '') + fin + '</td></tr>');
   };
@@ -536,7 +536,7 @@ function render(f) {
   // display (targets are bare domains, probes always https). When the probe
   // was redirected onto a DIFFERENT host (cookie walls, mirrors), show it
   // after a "→" as a link to that domain's own check.
-  const shown = String(f.url).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  const shown = noDefaultPort(String(f.url)).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
   const urlHtml = /^https?:\/\//i.test(f.url)
     ? '<a class="selflink" href="/' + niceParam(f.url)
       + '" title="Link to this check">' + esc(shown) + '</a>'
@@ -700,6 +700,15 @@ function bareDomain(h) {
   return h.indexOf(':') > -1 && h[0] !== '[' ? h.slice(0, h.indexOf(':')) : h;
 }
 
+/* display form of a URL: drop the implicit default port (:443 on https,
+   :80 on http) — it carries no information. Explicit custom ports (:8443)
+   stay visible; only whole-port numbers match, so :4433 is untouched. */
+function noDefaultPort(u) {
+  return String(u || '')
+    .replace(/^(https):\/\/([^\/?#]+):443(?=[\/?#]|$)/i, '$1://$2')
+    .replace(/^(http):\/\/([^\/?#]+):80(?=[\/?#]|$)/i, '$1://$2');
+}
+
 /* verdict-colored favicon: green dot for protective results, red for bad
    ones; the neutral gray default lives in the static <head> link */
 const FAVICON = {
@@ -754,12 +763,13 @@ async function loadReleases() {
     if (r.status === 200 && Array.isArray(r.data.patched_releases)) {
       const changed = r.data.patched_releases.join(',') !== SERVER_RELEASES.join(',');
       SERVER_RELEASES = r.data.patched_releases;
+      // no advisory list loaded: say nothing here (the operator may never
+      // load one) — the PHP chip itself already reports the unknown verdict
       $('releasestate').textContent = SERVER_RELEASES.length
         ? 'Patched PHP releases on this service: ' + SERVER_RELEASES.join(', ')
           + ' — per-branch: a version ≥ its branch’s entry counts as patched;'
           + ' PHP 5/6/7 always count as unpatched (EOL, no fix).'
-        : 'Patched PHP releases: none set yet — version verdicts stay “unknown” until'
-          + ' the operator loads the advisory list.';
+        : '';
       if (changed) render(lastFacts);   // re-interpret with the fresh list
     }
   } catch (_) {}
@@ -859,7 +869,8 @@ async function poll(jobId) {
     await sleep(delay);
     delay = Math.min(delay + 200, 3000);   // gentle backoff
   }
-  if (finished) $('progtext').textContent += ' — done';
+  // result card renders — the progress text has nothing left to add
+  if (finished) $('progtext').textContent = '';
 }
 
 /* ------------------------------------------------------------- dark mode */
