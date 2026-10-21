@@ -160,9 +160,10 @@
       <span class="mono" id="resurl"></span>
     </div>
     <div class="small mono" id="testdate" hidden style="margin-top:4px"></div>
+    <div class="resrow" id="row_endpoint" hidden><span class="dimlabel">endpoint</span> <span class="mono small" id="dimendpoint"></span></div>
     <div class="resrow"><span class="dimlabel">verdict</span> <span id="verdict"></span></div>
     <div class="resrow"><span class="dimlabel">PHP banner</span> <span id="dimphp"></span></div>
-    <div class="resrow"><span class="dimlabel">block test</span> <span id="dimblk"></span></div>
+    <div class="resrow"><span class="dimlabel">vulnerability check</span> <span id="dimblk"></span></div>
     <details id="techcard" hidden>
       <summary>Technical info</summary>
       <details id="sumcard" style="margin-top:10px">
@@ -250,7 +251,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.27";
+const BUILD = "2026-10-21.28";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -327,6 +328,15 @@ function blockDimension(facts) {
   // phrasing: PHP is demonstrably present, we just cannot version-check it
   const phpEvidence = !!(g.php_session_cookie || g.x_powered_by);
   const st = p => (p.first_status !== undefined ? p.first_status : (p.redirect ? 302 : p.status));
+
+  const isMultipartThrough = p => {
+    if (!p || p.error || p.skipped) return false;
+    const fs = p.first_status !== undefined ? p.first_status : p.status;
+    if (fs >= 200 && fs < 300) return true;
+    if ((fs === 307 || fs === 308) && p.status >= 200 && p.status < 300) return true;
+    return false;
+  };
+
   const ue = facts.post_urlencoded || {};
   const mps = [['POST', facts.post_multipart], ['PUT', facts.put_multipart], ['PATCH', facts.patch_multipart]]
               .filter(([m, p]) => p && !p.skipped);
@@ -346,23 +356,33 @@ function blockDimension(facts) {
   if (all405) return { cls: 'info', static: true,
     text: 'no request-body processing (405/501 on ' + mps.map(function (e) { return e[0]; }).join('+')
       + ')' + (phpEvidence ? ' — PHP present, version unknown' : ' — static hosting likely') };
+  const allRedirect = [ue].concat(mps.map(function (e) { return e[1]; })).every(p => {
+    const s = st(p);
+    return s >= 300 && s < 400;
+  });
+  if (allRedirect) {
+    return { cls: 'info', static: true,
+      text: 'all requests redirected (3xx)' + (phpEvidence ? ' — PHP present, version unknown' : ' — redirect endpoint') };
+  }
   // multipart reached the backend on ANY method (blocking POST alone is not enough)
-  const through = mps.filter(([m, p]) => st(p) >= 200 && st(p) < 400);
+  const through = mps.filter(([m, p]) => isMultipartThrough(p));
   if (through.length) {
     // plain-language chip + a short gray "why" (status codes live in the
     // Technical info table): one shared answer is summarised once, mixed
     // answers are listed per method
-    const ans = p => st(p) + (STATUS_NAMES[st(p)] ? ' ' + STATUS_NAMES[st(p)] : '')
-      + (p.redirects ? ' and redirected' : '');
+    const sn = s => s + (STATUS_NAMES[s] ? ' ' + STATUS_NAMES[s] : '');
+    const ans = p => {
+      const fs = p.first_status !== undefined ? p.first_status : p.status;
+      return sn(fs) + (fs !== p.status ? ', then ' + sn(p.status) + ' after the redirect' : '');
+    };
     const answers = through.map(([m, p]) => ans(p));
     const why = 'server answered ' + (answers.every(a => a === answers[0]) ? answers[0]
-      : through.map(([m, p], i) => m + ' ' + answers[i]).join(', ')) + ' \u2014 see Technical info';
+      : through.map(([m, p], i) => m + ' ' + answers[i]).join('; ')) + ' \u2014 see Technical info';
     return { cls: 'bad', why,
       text: 'NOT BLOCKED \u2014 test uploads were accepted on ' + andList(through.map(e => e[0])) };
   }
   // multipart rejected wherever we probed it
-  const sue = st(ue);
-  if (sue >= 200 && sue < 400) {
+  if (isMultipartThrough(ue) && !through.length) {
     // asymmetric rejection on POST = a content-type rule fired, likely before
     // PHP ever parsed the body
     return { cls: 'ok', text: 'active (multipart rejected' + (mps.length === 3 ? ' on POST+PUT+PATCH' : ' on POST') + ', likely before PHP)' };
@@ -373,10 +393,14 @@ function blockDimension(facts) {
   // When every probe (including GET) was edge-blocked (403/406), mark WAF assumed.
   const gst = st(g);
   const isBlock = s => s === 403 || s === 406;
-  if (isBlock(gst) && isBlock(sue) && mps.every(([_, p]) => isBlock(st(p)))) {
+  if (isBlock(gst) && isBlock(st(ue)) && mps.every(([_, p]) => isBlock(st(p)))) {
     return { cls: 'warn', waf: true, text: 'WAF assumed (' + gst + ' on GET+' + mps.map(([m]) => m).join('+') + ')' };
   }
   const rej = mps.map(([m, p]) => m + ' ' + st(p)).join(', ');
+  // uploads redirected (3xx) without landing on a 2xx: not "rejected", but
+  // not proof the body was parsed either
+  if (mps.some(([_, p]) => st(p) >= 300 && st(p) < 400))
+    return { cls: 'info', text: 'uploads redirected, not accepted (' + rej + ') — cannot tell remotely whether PHP read them' };
   return { cls: 'info', text: 'all rejected (' + rej + ') — edge vs app-level indistinguishable remotely' };
 }
 
@@ -586,6 +610,13 @@ function techInfo(f, v) {
       + (lastPowBits.poll ? lastPowBits.poll + '-bit poll' : 'poll off'));
   }
   if (f.fetched_at) meta.push('tested ' + utcText(f.fetched_at) + ' (' + agoText(f.fetched_at) + ')');
+  const redirProbe = (f.get && (f.get.redirects | 0) > 0 && f.get.final_url) ? f.get
+    : (f.post_urlencoded && (f.post_urlencoded.redirects | 0) > 0 && f.post_urlencoded.final_url) ? f.post_urlencoded
+    : (f.post_multipart && (f.post_multipart.redirects | 0) > 0 && f.post_multipart.final_url) ? f.post_multipart
+    : null;
+  if (redirProbe && redirProbe.final_url && redirProbe.final_url !== f.url) {
+    meta.push('final endpoint <b class="mono">' + esc(noDefaultPort(redirProbe.final_url)) + '</b> (' + (redirProbe.redirects | 0) + ' redirect' + (redirProbe.redirects > 1 ? 's' : '') + ')');
+  }
   meta.push('build ' + BUILD);
   if (bad) meta.push('<span class="pill pill-bad">red</span> = the response this red verdict is based on');
 
@@ -597,36 +628,52 @@ function techInfo(f, v) {
      and every request that reached the backend (ASSUMED VULNERABLE). */
   const reached = p => {
     if (!p || p.error || p.skipped) return false;
-    const s = p.first_status !== undefined ? p.first_status : p.status;
+    const s = p.status !== undefined ? p.status : p.first_status;
     return s >= 200 && s < 400;
   };
-  const pill = (p, evidence) => {
-    let c = 'mute', t = 'SKIP';
-    if (p.error) { t = 'ERR'; }
-    else if (!p.skipped) {
-      const s = p.first_status !== undefined ? p.first_status : p.status;
-      t = String(s) + (STATUS_NAMES[s] ? ' ' + STATUS_NAMES[s] : '');
-      if (s >= 200 && s < 400) c = evidence ? 'bad' : 'done';
-      else if (s >= 400 && s < 500) c = 'block';
-      else if (s >= 500) c = 'err';
+  const statusClass = (s, isEvidence) => {
+    if (s >= 200 && s < 400) {
+      if (s >= 300 && s < 400) return 'done';   // 3xx redirect is neutral/blue, never red
+      return isEvidence ? 'bad' : 'done';
     }
-    return '<span class="pill pill-' + c + '">' + t + '</span>';
+    if (s >= 400 && s < 500) return 'block';
+    if (s >= 500) return 'err';
+    return 'mute';
+  };
+  const responsePills = (p, evidence) => {
+    if (!p) return '—';
+    if (p.error) return '<span class="pill pill-mute">ERR</span>';
+    if (p.skipped) return '<span class="pill pill-mute">SKIP</span>';
+
+    const first = p.first_status !== undefined ? p.first_status : p.status;
+    const finalSt = p.status !== undefined ? p.status : first;
+
+    if (first !== undefined && finalSt !== undefined && first !== finalSt) {
+      // Chain of pills: [301] (neutral redirect) -> [200] (endpoint response, colored if evidence)
+      const firstPill = '<span class="pill pill-done">'
+        + esc(String(first) + (STATUS_NAMES[first] ? ' ' + STATUS_NAMES[first] : '')) + '</span>';
+      const finalPill = '<span class="pill pill-' + statusClass(finalSt, evidence) + '" title="Actual endpoint response">'
+        + esc(String(finalSt) + (STATUS_NAMES[finalSt] ? ' ' + STATUS_NAMES[finalSt] : '')) + '</span>';
+      return firstPill + ' <span style="color:var(--muted);font-weight:600">→</span> ' + finalPill;
+    }
+
+    return '<span class="pill pill-' + statusClass(finalSt, evidence) + '">'
+      + esc(String(finalSt) + (STATUS_NAMES[finalSt] ? ' ' + STATUS_NAMES[finalSt] : '')) + '</span>';
   };
   const row = (label, sent, p, evidence) => {
     if (!p) return;
     const bits = [];
     if (p.error) bits.push(p.error);
     else if (!p.skipped) {
-      if (p.first_status !== undefined && p.first_status !== p.status) bits.push('→ ' + p.status);
       if (p.redirects) bits.push('+' + p.redirects + ' redirect' + (p.redirects > 1 ? 's' : ''));
     }
     if (p.skipped && p.baseline_error) bits.push('baseline: ' + p.baseline_error);
     if (p.proto) bits.push(p.proto);
     if (p.ms !== undefined) bits.push(p.ms + ' ms');
     let fin = '';
-    if (p.redirects && p.final_url) fin = '<div class="small">' + esc(noDefaultPort(p.final_url)) + '</div>';
+    if (p.redirects && p.final_url) fin = '<div class="small" style="margin-top:2px;color:var(--muted)">endpoint: ' + esc(noDefaultPort(p.final_url)) + '</div>';
     rows.push('<tr><td><b>' + label + '</b></td><td class="small">' + sent
-      + '</td><td class="mono">' + pill(p, evidence) + (bits.length ? ' ' + esc(bits.join(' · ')) : '') + fin + '</td></tr>');
+      + '</td><td class="mono">' + responsePills(p, evidence) + (bits.length ? ' ' + esc(bits.join(' · ')) : '') + fin + '</td></tr>');
   };
   /* evidence = the exact responses the red verdict is derived from: the
      banner row for UNPATCHED/EXPOSED, the reached backend requests for
@@ -716,6 +763,18 @@ function render(f) {
     // test are all port-insensitive (share links are bare domains)
     const endHost = bareDomain(hostOf(redirProbe.final_url));
     const origHost = bareDomain(hostOf(f.url));
+    const hasRedir = (redirProbe.redirects | 0) > 0 && redirProbe.final_url && redirProbe.final_url !== f.url;
+
+    if (hasRedir) {
+      $('row_endpoint').hidden = false;
+      const cleanEnd = noDefaultPort(redirProbe.final_url);
+      $('dimendpoint').innerHTML = '<a class="selflink" href="/' + niceParam(endHost || cleanEnd)
+        + '" title="Check destination endpoint">' + esc(cleanEnd) + '</a>'
+        + ' <span style="color:var(--muted)">(' + (redirProbe.redirects | 0) + ' redirect' + (redirProbe.redirects > 1 ? 's' : '') + ')</span>';
+    } else {
+      $('row_endpoint').hidden = true;
+    }
+
     if (endHost && origHost && endHost !== origHost && (redirProbe.redirects | 0) > 0) {
       redirHtml = ' <span class="redir">→ <a class="selflink" href="/'
         + niceParam(endHost) + '" title="redirected ' + (redirProbe.redirects | 0)
@@ -737,6 +796,11 @@ function render(f) {
   $('tech').innerHTML = techInfo(f, v);
   $('raw').textContent = JSON.stringify(f, null, 2);
   $('techcard').hidden = false;
+  try {
+    if (localStorage.getItem('techcard_open') === '1') {
+      $('techcard').open = true;
+    }
+  } catch (_) {}
 }
 
 /* ------------------------------------------------------------------- polling */
@@ -963,12 +1027,7 @@ async function run(force, urlOverride) {
     $('progtext').textContent = 'enter a domain like example.com (paths and parameters are not scanned)';
     return;
   }
-  const bare = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
   if (clean !== raw) $('url').value = clean;
-  if (bare.toLowerCase() !== clean) {
-    $('progtext').textContent = 'URL path stripped \u2014 only bare domains are scanned; press Check again';
-    return;
-  }
   const url = 'https://' + clean;   // always https, whatever was typed
   lastUrl = url;
   // shareable state: the path after "/" IS the checked URL (scheme and
@@ -1212,6 +1271,9 @@ $('url').addEventListener('keydown', e => { if (e.key === 'Enter') run(false); }
 $('url').addEventListener('input', () => {
   renderRecheck();
   renderDiyScript();
+});
+$('techcard').addEventListener('toggle', () => {
+  try { localStorage.setItem('techcard_open', $('techcard').open ? '1' : '0'); } catch (_) {}
 });
 renderDiyScript();
 loadReleases();

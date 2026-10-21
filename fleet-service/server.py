@@ -1463,6 +1463,16 @@ def _blk_preview(facts):
             return 302
         return p.get("status") or 0
 
+    def is_through(p):
+        if not p or "error" in p or p.get("skipped"):
+            return False
+        fs = p.get("first_status", p.get("status", 0))
+        if 200 <= fs < 300:
+            return True
+        if fs in (307, 308) and 200 <= (p.get("status") or 0) < 300:
+            return True
+        return False
+
     ue = facts.get("post_urlencoded") or {}
     mps = [(m, facts.get(m.lower() + "_multipart"))
            for m in ("POST", "PUT", "PATCH")]
@@ -1485,13 +1495,19 @@ def _blk_preview(facts):
                 "text": "no request-body processing (405/501 on "
                         + "+".join(m for m, _ in mps) + ")"
                         + (tail or " — static hosting likely")}
-    through = [m for m, p in mps if 200 <= st(p) < 400]
+    all_redir = all(300 <= st(p) < 400
+                    for p in [ue] + [p for _, p in mps])
+    if all_redir:
+        return {"cls": "info", "static": True,
+                "text": "all requests redirected (3xx)"
+                        + (tail or " — redirect endpoint")}
+    through = [m for m, p in mps if is_through(p)]
     if through:
         ms = through[0] if len(through) < 2 \
             else ", ".join(through[:-1]) + " and " + through[-1]
         return {"cls": "bad",
                 "text": "NOT BLOCKED — test uploads were accepted on " + ms}
-    if 200 <= st(ue) < 400:
+    if is_through(ue):
         return {"cls": "ok", "text": "active (multipart rejected on "
                 + ("POST+PUT+PATCH" if len(mps) == 3 else "POST") + ", likely before PHP)"}
     # When every probe (including GET) was edge-blocked (403/406), mark WAF assumed.
@@ -1501,9 +1517,14 @@ def _blk_preview(facts):
         return {"cls": "warn", "waf": True,
                 "text": "WAF assumed (%s on GET+%s)"
                         % (gst, "+".join(m for m, _ in mps))}
+    rej = ", ".join("%s %s" % (m, st(p)) for m, p in mps)
+    if any(300 <= st(p) < 400 for _, p in mps):
+        return {"cls": "info",
+                "text": "uploads redirected, not accepted (%s) — cannot tell "
+                        "remotely whether PHP read them" % rej}
     return {"cls": "info",
             "text": "all rejected (%s) — edge vs app-level indistinguishable remotely"
-                    % ", ".join("%s %s" % (m, st(p)) for m, p in mps)}
+                    % rej}
 
 
 def _verdict_preview(facts, releases):
@@ -1660,7 +1681,7 @@ def og_png(facts, releases):
                 _og_chip(d, 80, 232, label, _OG_C[cls], f_verdict, chip_max)
                 d.text((80, 298), "PHP banner", font=f_lab, fill=_OG_C["muted"])
                 _og_chip(d, 80, 324, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
-                d.text((80, 390), "block test", font=f_lab, fill=_OG_C["muted"])
+                d.text((80, 390), "vulnerability check", font=f_lab, fill=_OG_C["muted"])
                 btxt = blk["text"] if blk else "not tested"
                 _og_chip(d, 80, 416, btxt, _OG_C[blk["cls"] if blk else "info"], f_chip,
                          chip_max, max_lines=1)
@@ -1670,7 +1691,7 @@ def og_png(facts, releases):
                 _og_chip(d, 80, 244, label, _OG_C[cls], f_verdict, chip_max)
                 d.text((80, 322), "PHP banner", font=f_lab, fill=_OG_C["muted"])
                 _og_chip(d, 80, 350, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
-                d.text((80, 422), "block test", font=f_lab, fill=_OG_C["muted"])
+                d.text((80, 422), "vulnerability check", font=f_lab, fill=_OG_C["muted"])
                 btxt = blk["text"] if blk else "not tested"
                 _og_chip(d, 80, 450, btxt, _OG_C[blk["cls"] if blk else "info"], f_chip,
                          chip_max, max_lines=2)
