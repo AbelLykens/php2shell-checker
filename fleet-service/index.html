@@ -135,6 +135,10 @@
   }
   /* redirect end host after the "→" in the result header: underlined link */
   .redir a.selflink { text-decoration: underline; text-underline-offset: 2px; }
+  /* open-site icon right of the result header */
+  a.openlink { color: var(--muted); margin-left: 4px; display: inline-block; vertical-align: -1px; }
+  a.openlink:hover { color: var(--accent); }
+  a.openlink svg { width: 13px; height: 13px; display: block; }
   #verdict .chip { font-size: 13px; }
   #go { min-width: 140px; }   /* stays stable when text switches to Re-check / countdown */
   #techcard > summary { margin-top: 12px; }   /* expandible inside the result card */
@@ -259,7 +263,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.29";
+const BUILD = "2026-10-21.30";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -777,7 +781,14 @@ function render(f) {
         + '× — check the destination domain">' + esc(endHost) + '</a></span>';
     }
   } catch (_) {}
-  $('resurl').innerHTML = urlHtml + redirHtml;
+  // open icon: visits the checked site itself in a new window (no referrer)
+  const openHtml = /^https?:\/\//i.test(f.url)
+    ? ' <a class="openlink" href="' + esc(f.url) + '" target="_blank" rel="noopener noreferrer"'
+      + ' title="Open ' + esc(shown) + ' in a new window" aria-label="Open site in a new window">'
+      + '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2 7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"'
+      + ' fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>'
+    : '';
+  $('resurl').innerHTML = urlHtml + redirHtml + openHtml;
   setFavicon(v.cls);
   document.title = 'php2shell.site \u2014 ' + (shown || 'check');
   $('verdict').innerHTML = chip(v.cls, v.label);
