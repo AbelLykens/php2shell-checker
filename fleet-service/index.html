@@ -263,7 +263,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.38";
+const BUILD = "2026-10-21.40";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -296,6 +296,10 @@ function versionStatus(v) {
     const [pm, pn] = parseVer(p);
     if (pm === maj && pn === min) { entry = p; break; }
   }
+  // an 8.x branch older than every listed 8.x branch is EOL (8.0/8.1 by now)
+  const minors = SERVER_RELEASES.map(parseVer).filter(p => p[0] === maj).map(p => p[1]);
+  if (entry === null && minors.length && min < Math.min.apply(null, minors))
+    return { cls: 'bad', text: v + ' — EOL branch, no fix coming' };
   if (entry === null) return { cls: 'info', text: v + ' — no data for this branch — unknown' };
   if (cmpVer(v, entry) >= 0) return { cls: 'ok', text: v + ' ≥ ' + entry };
   return { cls: 'bad', text: v + ' < ' + entry };
@@ -1123,7 +1127,8 @@ async function run(force, urlOverride) {
     const elapsed = Math.max(0, Math.round((Date.now() - statusState.startedAt) / 1000));
     const elapsedStr = elapsed > 0 ? ' · ' + elapsed + 's' : '';
     if (statusState.phase === 'pow') {
-      $('progtext').textContent = 'proof of work…' + elapsedStr;
+      $('progtext').textContent = 'proof of work'
+        + (statusState.busy ? ' (server busy \u2014 extra work, takes longer)' : '') + '…' + elapsedStr;
     } else if (statusState.phase === 'submitting') {
       $('progtext').textContent = 'submitting…' + elapsedStr;
     } else if (statusState.phase === 'queued') {
@@ -1153,6 +1158,7 @@ async function run(force, urlOverride) {
     } else {
       ch = await getPow('scan', controller.signal);
       lastPowBits.scan = ch.bits || 0;
+      statusState.busy = !!ch.busy;
       pow = await solvePow(ch, controller.signal);
     }
     statusState.phase = 'submitting';
@@ -1166,6 +1172,7 @@ async function run(force, urlOverride) {
       updateProgText();
       ch = await getPow('scan', controller.signal);
       lastPowBits.scan = ch.bits || 0;
+      statusState.busy = !!ch.busy;
       pow = await solvePow(ch, controller.signal);
       statusState.phase = 'submitting';
       updateProgText();

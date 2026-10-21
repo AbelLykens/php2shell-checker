@@ -151,6 +151,8 @@ DEFAULTS = dict(
     admin_token=None,       # token for POST /api/releases (or env PHP2SHELL_ADMIN_TOKEN)
     pow_scan_bits=18,       # PoW difficulty for job submission (~1s in a browser)
     pow_poll_bits=12,       # lighter PoW for status polls (CPU-throttles polling)
+    pow_scan_max_extra=4,   # adaptive: +1 scan bit per queue doubling past 2x workers
+    pow_open_per_ip=64,     # unsolved challenges one client IP may hold at once
     pow_ttl=180.0,          # seconds a PoW challenge stays valid; single-use
     memcached="127.0.0.1:11211",  # localhost metrics bus ('none' disables)
     og_cache_dir=None,      # default: og-cache/ next to the DB file ('none' disables)
@@ -834,7 +836,8 @@ class ServiceState(object):
         self.started_at = time.time()
         self.stop = threading.Event()
         self.workers = []
-        self.pow = {}            # challenge id -> (expires, purpose, bits)
+        self.pow = {}            # challenge id -> (expires, purpose, bits, ip)
+        self.pow_open = {}       # ip -> unsolved challenges outstanding
         self.pow_lock = threading.Lock()
         self.seq = 0             # FIFO sequence for queue-position reporting
         self.seq_lock = threading.Lock()
@@ -933,17 +936,55 @@ class ServiceState(object):
     # quickly, and are purpose-bound ("scan" vs "status" carry different
     # difficulties, so polls are cheaper than submissions).
 
-    def issue_pow(self, purpose):
-        bits = (self.cfg["pow_scan_bits"] if purpose == "scan"
-                else self.cfg["pow_poll_bits"])
+    def scan_bits_extra(self):
+        """Adaptive scan difficulty: +1 bit (2x the work) per doubling of the
+        queue beyond 2x workers, capped at pow_scan_max_extra. Polls stay
+        cheap - they only follow work that already paid to get in."""
+        depth, t, extra = self.q.qsize(), 2 * max(1, self.cfg["workers"]), 0
+        while depth >= t and extra < self.cfg.get("pow_scan_max_extra", 0):
+            extra += 1
+            t *= 2
+        return extra
+
+    def _pow_drop(self, cid):
+        """Remove a challenge + its per-IP count. Caller holds pow_lock."""
+        entry = self.pow.pop(cid, None)
+        if entry is not None:
+            ip = entry[3]
+            n = self.pow_open.get(ip, 0) - 1
+            if n > 0:
+                self.pow_open[ip] = n
+            else:
+                self.pow_open.pop(ip, None)
+        return entry
+
+    def issue_pow(self, purpose, ip=""):
+        """Returns a challenge dict, None (global memory bound) or
+        {"error": ...} when this IP already holds too many unsolved ones."""
+        extra = 0
+        if purpose == "scan":
+            bits = self.cfg["pow_scan_bits"]
+            if bits > 0:
+                extra = self.scan_bits_extra()
+                bits += extra
+        else:
+            bits = self.cfg["pow_poll_bits"]
         if bits <= 0:
             return {"disabled": True, "bits": 0}
         with self.pow_lock:
             if len(self.pow) > 10000:
                 return None  # memory bound; a challenge costs the issuer nothing
+            # per-IP cap: one client cannot fill the global pool and lock
+            # every other visitor out for pow_ttl
+            if self.pow_open.get(ip, 0) >= self.cfg.get("pow_open_per_ip", 64):
+                return {"error": "too many open challenges"}
             cid = uuid.uuid4().hex
-            self.pow[cid] = (time.time() + self.cfg["pow_ttl"], purpose, bits)
-        return {"id": cid, "bits": bits, "expires_in_s": int(self.cfg["pow_ttl"])}
+            self.pow[cid] = (time.time() + self.cfg["pow_ttl"], purpose, bits, ip)
+            self.pow_open[ip] = self.pow_open.get(ip, 0) + 1
+        ch = {"id": cid, "bits": bits, "expires_in_s": int(self.cfg["pow_ttl"])}
+        if extra:
+            ch["busy"] = True   # client: "server busy - longer proof of work"
+        return ch
 
     _POW_NONCE_RE = re.compile(r"[0-9a-f]{1,16}$")
 
@@ -957,10 +998,10 @@ class ServiceState(object):
                 or not self._POW_NONCE_RE.match(nonce):
             return "pow required/invalid"
         with self.pow_lock:
-            entry = self.pow.pop(cid, None)  # burned even if checks below fail
+            entry = self._pow_drop(cid)  # burned even if checks below fail
         if entry is None:
             return "pow invalid or already used"
-        expires, p, bits = entry
+        expires, p, bits, _ip = entry
         if p != purpose:
             return "pow purpose mismatch"
         if time.time() > expires:
@@ -1177,7 +1218,7 @@ class ServiceState(object):
             with self.pow_lock:  # drop expired PoW challenges
                 stale = [k for k, v in self.pow.items() if v[0] < now]
                 for k in stale:
-                    del self.pow[k]
+                    self._pow_drop(k)
             if self.og is not None:
                 try:
                     self.og.gc()   # stale OG card files off the disk
@@ -1358,6 +1399,11 @@ class ServiceState(object):
                 "trust_proxy": self.cfg.get("trust_proxy", False),
                 "pow_scan_bits": self.cfg["pow_scan_bits"],
                 "pow_poll_bits": self.cfg["pow_poll_bits"],
+                "pow_scan_bits_now": (self.cfg["pow_scan_bits"]
+                                      + self.scan_bits_extra()
+                                      if self.cfg["pow_scan_bits"] > 0 else 0),
+                "pow_scan_max_extra": self.cfg.get("pow_scan_max_extra", 0),
+                "pow_open_per_ip": self.cfg.get("pow_open_per_ip", 64),
             },
         }
         if self.store:
@@ -1440,6 +1486,11 @@ def _php_preview(facts, releases):
         if len(pp) > 1 and int(pp[0]) == maj and int(pp[1]) == mino:
             entry = p
             break
+    # an 8.x branch older than every listed 8.x branch is EOL (8.0/8.1 by now)
+    minors = [int(p.split(".")[1]) for p in releases
+              if len(p.split(".")) > 1 and int(p.split(".")[0]) == maj]
+    if entry is None and minors and mino < min(minors):
+        return {"cls": "bad", "text": v + " — EOL branch, no fix coming"}
     if entry is None:
         return {"cls": "info", "text": v + " — no data for this branch — unknown"}
     key = lambda s: tuple(int(x) for x in s.split("."))
@@ -1973,15 +2024,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"domain": domain, "key": key, "facts": facts})
             if path == "/api/pow":
                 # issue a one-time PoW challenge; ?for=scan|status picks the
-                # difficulty. Cheap to issue, worthless without solving, so
-                # no rate limit - just a memory bound inside issue_pow().
+                # difficulty (scan rises with queue depth). Cheap to issue,
+                # worthless without solving: bounded per IP + globally inside
+                # issue_pow().
                 q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 purpose = (q.get("for") or ["scan"])[0]
                 if purpose not in ("scan", "status"):
                     return self._json({"error": "for must be scan|status"}, 422)
-                ch = self.state.issue_pow(purpose)
+                ch = self.state.issue_pow(purpose, self._client_ip())
                 if ch is None:
                     return self._json({"error": "server busy"}, 503)
+                if "error" in ch:
+                    return self._json(ch, 429)
                 return self._json(ch)
             m = re.match(r"^/api/job/([0-9a-f]+)$", path)
             if m:
