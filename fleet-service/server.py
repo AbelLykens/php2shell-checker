@@ -2220,6 +2220,50 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "php2shell-fleet-check/" + VERSION
     timeout = 60
 
+    # HEAD = GET without a body: link-preview bots (Skype, crawlers) probe
+    # with HEAD first and got 501. API endpoints other than these refuse
+    # HEAD, so it can never burn a PoW challenge or poll a job.
+    _HEAD_API_OK = ("/api/og", "/api/health", "/api/releases")
+
+    class _NoBody(object):
+        def write(self, b):
+            return len(b)
+
+        def flush(self):
+            pass
+
+    def end_headers(self):
+        super().end_headers()
+        if getattr(self, "_head_only", False):
+            self.wfile = Handler._NoBody()   # headers sent; drop the body
+
+    def do_HEAD(self):
+        orig = self.wfile
+        self._head_only = True
+        try:
+            path = urllib.parse.urlsplit(self.path).path
+            if path.startswith("/api/") and path not in self._HEAD_API_OK:
+                return self._method_not_allowed()
+            return self.do_GET()
+        finally:
+            self.wfile = orig
+            self._head_only = False
+
+    def _method_not_allowed(self):
+        """405 + Allow instead of the stdlib's 501 for unsupported methods.
+        Any request body stays unread, so the connection is closed."""
+        body = b'{"error": "method not allowed"}'
+        self.close_connection = True
+        self.send_response(405)
+        self.send_header("Allow", "GET, HEAD, POST")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_PUT = do_PATCH = do_DELETE = do_OPTIONS = _method_not_allowed
+
     # -- helpers -----------------------------------------------------------
 
     @property
