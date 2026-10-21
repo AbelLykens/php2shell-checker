@@ -218,7 +218,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.15";
+const BUILD = "2026-10-21.16";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -837,7 +837,6 @@ async function run(force, urlOverride) {
   running = true;
   controller = new AbortController();
   $('go').disabled = true;
-  $('recheck').disabled = true;
   $('bar').hidden = false;   // progress bar only exists while a check runs
   $('progress').style.width = '0%';
   $('progtext').textContent = 'proof of work…';
