@@ -1,0 +1,13 @@
+# SSH keys for git remotes — NEVER commit
+.ssh-keys/
+
+# separate git repo with its own remote (php2shell-poc (separate repo))
+php2shell-poc/
+
+# 42 MB build artifacts, not repo material
+php-up-2026.tar
+php-up-2026/
+
+# runtime junk
+*.pyc
+__pycache__/

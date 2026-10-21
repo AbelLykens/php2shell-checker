@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>php2shell check</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f6f7f9; --fg: #1d2430; --card: #fff; --border: #ccd2d9; --muted: #5a6572;
+    --accent: #2b5f9e; --accent-h: #24517f; --go-fg: #fff;
+    --code: #eef1f4; --input: #fff; --input-b: #aab4bf;
+    --btn: #fff; --btn-h: #eef1f4; --bar: #e3e7ec;
+    --ok-bg: #e6f4e9; --ok-fg: #1c6b34; --ok-b: #b5dcc0;
+    --warn-bg: #fdf3df; --warn-fg: #7d5400; --warn-b: #e8d4a4;
+    --bad-bg: #fdeaea; --bad-fg: #a12626; --bad-b: #eebdbd;
+    --info-bg: #eaeff5; --info-fg: #39536e; --info-b: #c6d2df;
+    --pre-bg: #0f1522; --pre-fg: #cfe3ff;
+    --done-bg: #e3edf9; --done-fg: #1d4f8a; --done-b: #b8d0ea;
+    --mute-bg: #eceff2; --mute-fg: #5a6572; --mute-b: #ccd2d9;
+  }
+  html[data-theme=dark] { color-scheme: dark; }
+  @media (prefers-color-scheme: dark) { html:not([data-theme=light]) { color-scheme: dark; } }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+  @media (prefers-color-scheme: dark) {
+    html:not([data-theme=light]) {
+      --bg: #151a21; --fg: #d7dde5; --card: #1d242e; --border: #39434f; --muted: #93a0ad;
+      --accent: #7aa7de; --accent-h: #8fb6e8; --go-fg: #10151b;
+      --code: #252d38; --input: #1a212a; --input-b: #46505c;
+      --btn: #232b36; --btn-h: #2b3542; --bar: #2a3340;
+      --ok-bg: #173422; --ok-fg: #7fd39a; --ok-b: #2c5c3f;
+      --warn-bg: #3a2f14; --warn-fg: #e8c877; --warn-b: #6b5a26;
+      --bad-bg: #3c1a1a; --bad-fg: #f19a9a; --bad-b: #6b2f2f;
+      --info-bg: #1c2836; --info-fg: #9fc0e0; --info-b: #33506b;
+      --pre-bg: #10161f; --pre-fg: #cfe3ff;
+      --done-bg: #1c2c40; --done-fg: #8ab8e8; --done-b: #2f4d70;
+      --mute-bg: #252d38; --mute-fg: #93a0ad; --mute-b: #39434f;
+    }
+  }
+  html[data-theme=dark] {
+    --bg: #151a21; --fg: #d7dde5; --card: #1d242e; --border: #39434f; --muted: #93a0ad;
+    --accent: #7aa7de; --accent-h: #8fb6e8; --go-fg: #10151b;
+    --code: #252d38; --input: #1a212a; --input-b: #46505c;
+    --btn: #232b36; --btn-h: #2b3542; --bar: #2a3340;
+    --ok-bg: #173422; --ok-fg: #7fd39a; --ok-b: #2c5c3f;
+    --warn-bg: #3a2f14; --warn-fg: #e8c877; --warn-b: #6b5a26;
+    --bad-bg: #3c1a1a; --bad-fg: #f19a9a; --bad-b: #6b2f2f;
+    --info-bg: #1c2836; --info-fg: #9fc0e0; --info-b: #33506b;
+    --pre-bg: #10161f; --pre-fg: #cfe3ff;
+    --done-bg: #1c2c40; --done-fg: #8ab8e8; --done-b: #2f4d70;
+    --mute-bg: #252d38; --mute-fg: #93a0ad; --mute-b: #39434f;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 70px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--border); padding: 16px 18px; margin: 14px 0; }
+  .chip { display: inline-block; padding: 1px 7px; font-size: 12px; font-weight: 600; white-space: nowrap; border: 1px solid; }
+  .ok   { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-b); }
+  .warn { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-b); }
+  .bad  { background: var(--bad-bg); color: var(--bad-fg); border-color: var(--bad-b); }
+  .info { background: var(--info-bg); color: var(--info-fg); border-color: var(--info-b); }
+  /* response pills in the Technical info table: blue = completed (2xx/3xx),
+     green = blocked (4xx - the protective outcome here), yellow = 5xx,
+     gray = no response (error/skipped) */
+  .pill { display: inline-block; min-width: 34px; text-align: center; padding: 0 5px;
+          font-size: 11px; font-weight: 700; border: 1px solid; white-space: nowrap; }
+  .pill-done  { background: var(--done-bg); color: var(--done-fg); border-color: var(--done-b); }
+  .pill-block { background: var(--ok-bg);   color: var(--ok-fg);   border-color: var(--ok-b); }
+  .pill-err   { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-b); }
+  .pill-mute  { background: var(--mute-bg); color: var(--mute-fg); border-color: var(--mute-b); }
+  .small { font-size: 12.5px; color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  code { background: var(--code); padding: 1px 5px; font-size: 12.5px; }
+  pre { background: var(--pre-bg); color: var(--pre-fg); padding: 12px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin: 10px 0 0; }
+  button { font: inherit; padding: 7px 16px; border: 1px solid var(--input-b); background: var(--btn); color: var(--fg); cursor: pointer; }
+  button:hover:not(:disabled) { background: var(--btn-h); }
+  button:disabled { opacity: .55; cursor: default; }
+  #go { border-color: var(--accent); background: var(--accent); color: var(--go-fg); }
+  #go:hover:not(:disabled) { background: var(--accent-h); }
+  input[type=text] { width: 100%; font: 13px ui-monospace, Menlo, Consolas, monospace; padding: 7px 9px; border: 1px solid var(--input-b); background: var(--input); color: var(--fg); }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  .bar { height: 8px; background: var(--bar); overflow: hidden; flex: 1; min-width: 120px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .spin { display: none; width: 12px; height: 12px; border: 2px solid var(--accent);
+          border-right-color: transparent; animation: spin .45s linear infinite;
+          vertical-align: -2px; margin-right: 7px; flex: none; }
+  .spin:not([hidden]) { display: inline-block; }   /* hidden attr must win */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  a { color: var(--accent); }
+  a.selflink { color: inherit; text-decoration: none; }   /* result header stays black */
+  a.selflink:hover { text-decoration: underline; }
+  #themebtn { position: fixed; top: 10px; right: 10px; width: 34px; height: 34px;
+              padding: 0; font-size: 16px; line-height: 1; z-index: 10;
+              background: var(--card); color: var(--fg); }
+  .foot { font-size: 12.5px; color: var(--muted); margin-top: 24px; }
+  .foot p { margin: 8px 0; }
+  details summary { cursor: pointer; color: var(--muted); }
+  .reshead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .resrow { display: flex; gap: 10px; align-items: center; margin: 8px 0 0; }
+  table.tech { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 8px 0 0; }
+  table.tech td, table.tech th { border: 1px solid var(--border); padding: 3px 8px; text-align: left; vertical-align: top; }
+  table.tech th { background: var(--code); font-weight: 600; }
+  table.tech td:first-child { white-space: nowrap; }
+  .dimlabel { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; min-width: 92px; }
+  #verdict .chip { font-size: 13px; }
+  #recheck { min-width: 172px; }   /* countdown text changes width otherwise */
+  #techcard > summary { margin-top: 12px; }   /* expandible inside the result card */
+</style>
+</head>
+<body>
+<button id="themebtn" type="button" title="Toggle dark mode"
+        aria-label="Toggle dark mode">&#9789;</button>
+<div class="wrap">
+  <h1><a class="selflink" href="./" title="php2shell check — this page">php2shell check</a></h1>
+  <p class="sub">Patch & mitigation status for CVE-2026-109618/619 (PHP
+     <code>session.upload_progress</code>), for URLs you are authorized to test.
+     All verdict logic runs locally in your browser — the server only relays raw HTTP facts.</p>
+
+  <div class="card">
+    <div class="row" style="margin-top:0">
+      <input type="text" id="url" placeholder="example.com or https://example.com" style="flex:1;min-width:230px">
+      <button id="go" type="button">Check</button>
+    </div>
+    <div class="row">
+      <div class="bar"><i id="progress"></i></div>
+      <span class="spin" id="spinner" hidden></span><span class="small mono" id="progtext"></span>
+    </div>
+    <div class="small" id="releasestate" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card" id="rescard" hidden>
+    <div class="reshead">
+      <span class="mono" id="resurl"></span>
+      <button id="recheck" type="button" disabled
+              title="Probe again now, ignoring stored results — allowed 3 minutes after the last test">Re-check</button>
+    </div>
+    <div class="small mono" id="testdate" hidden style="margin-top:4px"></div>
+    <div class="resrow"><span class="dimlabel">verdict</span> <span id="verdict"></span></div>
+    <div class="resrow"><span class="dimlabel">PHP banner</span> <span id="dimphp"></span></div>
+    <div class="resrow"><span class="dimlabel">block test</span> <span id="dimblk"></span></div>
+    <div class="resrow"><span class="dimlabel">session fixation</span> <span id="dimfix"></span></div>
+    <details id="techcard" hidden>
+      <summary>Technical info</summary>
+      <details id="sumcard" style="margin-top:10px">
+        <summary class="small">request summary (one line)</summary>
+        <div class="small mono" id="resdetails" style="margin-top:6px"></div>
+      </details>
+      <div id="tech" style="margin-top:10px"></div>
+      <details style="margin-top:8px">
+        <summary class="small">raw JSON (exactly as returned by the server)</summary>
+        <pre id="raw"></pre>
+      </details>
+    </details>
+  </div>
+
+  <div class="card" id="advisorycard">
+    <div class="resrow" style="margin-top:0">
+      <span class="dimlabel">advisory ETA</span>
+      <span class="mono" id="advisorycount" style="font-size:20px;font-weight:600">T-&hellip;</span>
+    </div>
+    <div class="small" style="margin-top:6px">Patched-release list (fixed PHP versions) is
+    published at 14:00&nbsp;UTC on 21&nbsp;Oct&nbsp;2026. Countdown runs in your browser.</div>
+  </div>
+
+  <div class="foot">
+    <p><strong>How to read.</strong> <b>PHP banner</b>: <code>X-Powered-By</code> PHP version vs
+    the patched-release list shown above the result (kept server-side by the operator). Absent
+    banners (CDN stripping, <code>expose_php=Off</code>) report <i>unknown</i> — a missing banner
+    is not safety. <b>Block test</b>: an upload-style (multipart) request vs a normal form POST,
+    on POST, PUT and PATCH — blocking POST alone is not enough, PHP 8.4 apps can read multipart
+    on other methods too. <b>ASSUMED VULNERABLE</b> (red) means such requests flow through to
+    the backend and no patched runtime could be confirmed — treat the site as vulnerable until
+    a patched PHP version is verified. <b>NO PHP
+    DETECTED</b> means no POST-shaped request is processed at this URL (connections dropped
+    or 405/501 replies) and there are no PHP indicators (banner, session cookie) — consistent
+    with a static site: nothing to exploit <i>at this URL</i>.</p>
+    <p><strong>Probes.</strong> One URL at a time, eight inert requests (1 GET, then a normal +
+    multipart request per method, plus a session-fixation probe that sends a random session id
+    as a plain form field — never an upload-progress field, never a file part, so the vulnerable
+    code path is never engaged). Redirects are followed like a browser (301/302/303 convert
+    to GET, 307/308 keep the method, max 3 hops) — the <i>first-hop</i> status decides the
+    verdict. A rejection at the CDN/WAF stops the request before PHP parses the body; the exact
+    same status produced inside the application happens <i>after</i> — and the two cannot be
+    told apart remotely, so the checker says so instead of over-claiming. A CDN-block also does
+    not help if the origin server is directly reachable. A URL that refuses connections shows
+    green <b>OFFLINE</b> — nothing is serving there, so there is nothing to assess.</p>
+    <p><strong>Scope.</strong> This is a patch-status / configuration check, not a vulnerability
+    probe: it never sends exploit-shaped requests (no session cookie, no file part, no
+    upload-progress field, no stalling). Results live only in your browser session — there is no
+    export endpoint; the tested URL stays in the address bar as <code>?url=&hellip;</code> for
+    bookmarking/sharing and is never sent anywhere. Every submission and every poll
+    solves a small proof-of-work in your browser (an abuse brake, ~1s once per check).
+    Definitive fix = a patched PHP runtime.</p>
+    <p><strong>No guarantees.</strong> Results are best-effort indications from the outside:
+    banners can lie, caches can hide the origin, and edge behavior differs per route. This is
+    not a vulnerability assessment — verify on the host. Docs for humans and LLMs:
+    <a href="/llms.txt">llms.txt</a>.</p>
+    <p id="buildline" class="small" style="opacity:.75"></p>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* visible build id: a stale tab is instantly recognizable (footer +
+   Technical info). Bump on every UI deploy. */
+const BUILD = "2026-10-21.7";
+
+/* ------------------------------------------------- server-side patched list */
+
+let SERVER_RELEASES = [];   // fetched from GET /api/releases, read-only here
+
+/* ------------------------------------------------------------- interpretation */
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';'); }
+function chip(cls, text) { return '<span class="chip ' + cls + '">' + esc(text) + '</span>'; }
+
+function parseVer(v) { return String(v).split('.').map(n => parseInt(n, 10) || 0); }
+function cmpVer(a, b) {
+  const x = parseVer(a), y = parseVer(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+function versionStatus(v) {
+  if (!SERVER_RELEASES.length) return { cls: 'info', text: v + ' — patched list not set' };
+  const [maj, min] = parseVer(v);
+  // PHP 5/6/7 are EOL and never receive this fix (vendor: PHP 8 only).
+  if (maj < 8) return { cls: 'bad', text: v + ' — EOL branch, no fix coming' };
+  let entry = null;
+  for (const p of SERVER_RELEASES) {
+    const [pm, pn] = parseVer(p);
+    if (pm === maj && pn === min) { entry = p; break; }
+  }
+  if (entry === null) return { cls: 'info', text: v + ' — no data for this branch — unknown' };
+  if (cmpVer(v, entry) >= 0) return { cls: 'ok', text: v + ' ≥ ' + entry };
+  return { cls: 'bad', text: v + ' < ' + entry };
+}
+function parsePhp(facts) {
+  const m = /PHP\/(\d+(?:\.\d+)+)/i.exec(String((facts.get || {}).x_powered_by || ''));
+  return m ? m[1] : null;
+}
+
+function phpDimension(facts) {
+  const g = facts.get || {};
+  if (g.error) return { cls: 'info', text: 'no response (' + g.error + ')' };
+  const v = parsePhp(facts);
+  if (!v) {
+    // a PHP session cookie proves the backend is PHP even with the banner stripped
+    const seen = g.php_session_cookie ? 'PHP app (session cookie), ' : '';
+    return { cls: 'info', text: seen + 'version hidden — unknown (HTTP ' + (g.status || '?') + ')' };
+  }
+  return versionStatus(v);
+}
+
+/* standard reason phrases (RFC 9110 + common extensions) - shown inside the
+   response pills, e.g. "405 Method Not Allowed"; unknown codes stay bare */
+const STATUS_NAMES = {
+  200: 'OK', 201: 'Created', 204: 'No Content', 206: 'Partial Content',
+  301: 'Moved Permanently', 302: 'Found', 303: 'See Other', 304: 'Not Modified',
+  307: 'Temporary Redirect', 308: 'Permanent Redirect',
+  400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
+  405: 'Method Not Allowed', 406: 'Not Acceptable', 408: 'Request Timeout',
+  409: 'Conflict', 410: 'Gone', 411: 'Length Required', 413: 'Payload Too Large',
+  414: 'URI Too Long', 415: 'Unsupported Media Type', 422: 'Unprocessable Entity',
+  429: 'Too Many Requests', 431: 'Request Header Fields Too Large',
+  451: 'Unavailable For Legal Reasons',
+  500: 'Internal Server Error', 501: 'Not Implemented', 502: 'Bad Gateway',
+  503: 'Service Unavailable', 504: 'Gateway Timeout', 505: 'HTTP Version Not Supported',
+};
+
+function blockDimension(facts) {
+  if (facts.level !== 'block') return null;
+  const g = facts.get || {};
+  // any PHP indicator (banner or session cookie) - suppresses "static hosting"
+  // phrasing: PHP is demonstrably present, we just cannot version-check it
+  const phpEvidence = !!(g.php_session_cookie || g.x_powered_by);
+  const st = p => (p.first_status !== undefined ? p.first_status : (p.redirect ? 302 : p.status));
+  const ue = facts.post_urlencoded || {};
+  const mps = [['POST', facts.post_multipart], ['PUT', facts.put_multipart], ['PATCH', facts.patch_multipart]]
+              .filter(([m, p]) => p && !p.skipped);
+  if (mps.length === 0) {
+    // every probe was skipped: the POST baseline died at connection level
+    // (dropped/reset) - nothing POST-shaped reaches any parser at this URL
+    return { cls: 'info', static: true, text: ue.error ? 'probe error (' + ue.error + ')'
+      : 'POST requests dropped before any processing'
+        + (ue.baseline_error ? ' (' + ue.baseline_error + ')' : '')
+        + (phpEvidence ? ' — PHP present, version unknown' : ' — no PHP indicators') };
+  }
+  for (const [m, p] of mps) if (p.error) return { cls: 'info', text: 'probe error (' + m + ': ' + p.error + ')' };
+  // method-level 405/501 on every request = nothing here accepts a request
+  // body; with zero PHP indicators that usually means static hosting
+  const all405 = [ue].concat(mps.map(function (e) { return e[1]; }))
+    .every(p => st(p) === 405 || st(p) === 501);
+  if (all405) return { cls: 'info', static: true,
+    text: 'no request-body processing (405/501 on ' + mps.map(function (e) { return e[0]; }).join('+')
+      + ')' + (phpEvidence ? ' — PHP present, version unknown' : ' — static hosting likely') };
+  // multipart reached the backend on ANY method (blocking POST alone is not enough)
+  const through = [];
+  for (const [m, p] of mps) {
+    const s = st(p);
+    if (s >= 200 && s < 400) through.push(m + ' → ' + s
+      + (p.redirects ? ' · +' + p.redirects + ' redirect' + (p.redirects > 1 ? 's' : '') : ''));
+  }
+  if (through.length) return { cls: 'bad', text: 'none (multipart reached the backend via ' + through.join(', ') + ')' };
+  // multipart rejected wherever we probed it
+  const sue = st(ue);
+  if (sue >= 200 && sue < 400) {
+    // asymmetric rejection on POST = a content-type rule fired, likely before
+    // PHP ever parsed the body
+    return { cls: 'ok', text: 'active (multipart rejected' + (mps.length === 3 ? ' on POST+PUT+PATCH' : ' on POST') + ', likely before PHP)' };
+  }
+  // baseline also rejected: identical rejection of both content types cannot be
+  // told apart remotely from an app-level 405/403, which happens AFTER PHP
+  // parsed the body - so it proves nothing protective.
+  const rej = mps.map(([m, p]) => m + ' ' + st(p)).join(', ');
+  return { cls: 'info', text: 'all rejected (' + rej + ') — edge vs app-level indistinguishable remotely' };
+}
+
+/* session-fixation probe (CVE-2026-109618 chain A, step 1 — inert): we sent a
+   random session id as a plain multipart form field. No upload-progress field,
+   no file part, so the vulnerable code path is never engaged; only the app's
+   session-id handling is observed. If OUR sid comes back in Set-Cookie, the
+   app adopts attacker-chosen session ids — the precondition the PoC chains
+   build on (session injection leading to upload-progress pivoting). */
+function sessionDimension(facts) {
+  if (facts.level !== 'block') return null;
+  const p = facts.post_fixation;
+  if (!p) return null;
+  if (p.skipped) return { cls: 'info', text: 'skipped (POST baseline failed)' };
+  if (p.error) return { cls: 'info', text: 'probe error (' + p.error + ')' };
+  if (p.sid_echo) return { cls: 'bad',
+    text: 'accepted — our session id came back in Set-Cookie (CVE-2026-109618 precondition)' };
+  const s = p.first_status !== undefined ? p.first_status : p.status;
+  if (s >= 200 && s < 400) return { cls: 'ok', text: 'not adopted (session id ignored)' };
+  return { cls: 'info', text: 'not observed (rejected ' + (s || 'connection') + ')' };
+}
+
+function interpret(facts) {
+  const php = phpDimension(facts), blk = blockDimension(facts);
+  const fix = sessionDimension(facts);
+  let cls = 'info', label = 'UNKNOWN';
+  const g = facts.get || {};
+  const ue = facts.post_urlencoded || {};
+  // connection refused = nothing is serving on that URL: nothing to assess
+  if (/connectionrefused/i.test(String(g.error || ''))) { cls = 'ok'; label = 'OFFLINE'; }
+  // GET failed AND the block probes also failed or never ran -> unreachable
+  else if (g.error && (!blk || ue.error || blk.static)) { cls = 'info'; label = 'UNREACHABLE'; }
+  else if (php.cls === 'bad' && blk && blk.cls === 'bad') { cls = 'bad'; label = 'EXPOSED'; }
+  else if (php.cls === 'bad') { cls = 'bad'; label = 'UNPATCHED'; }
+  else if (blk && blk.cls === 'ok') { cls = 'ok'; label = 'BLOCKED'; }
+  // multipart-family requests flow through and no patched runtime could be
+  // confirmed -> assume vulnerable until a patched PHP version is verified
+  else if (blk && blk.cls === 'bad') { cls = 'bad'; label = 'ASSUMED VULNERABLE'; }
+  // nothing POST-shaped is processed here AND zero PHP indicators anywhere
+  // (no banner, no session cookie): nothing to exploit at this URL
+  else if (blk && blk.static && php.cls === 'info'
+           && !g.php_session_cookie && !g.x_powered_by) { cls = 'ok'; label = 'NO PHP DETECTED'; }
+  else if (php.cls === 'ok') { cls = 'ok'; label = 'PATCHED'; }
+  // fixation accepted with no version banner in play: attacker-chosen session
+  // ids are adopted - the precondition CVE-2026-109618 chains build on.
+  // A version banner (UNPATCHED/PATCHED) still wins over this signal.
+  else if (fix && fix.cls === 'bad') { cls = 'bad'; label = 'ASSUMED VULNERABLE'; }
+  return { cls, label, php, blk, fix };
+}
+
+/* --------------------------------------------------------------------- state */
+
+let lastFacts = null;
+let lastUrl = '';
+let lastJobId = '';
+let lastForce = false;
+let lastPowBits = { scan: 0, poll: 0 };   // difficulties we solved, shown as tech info
+let running = false;
+let controller = null;
+
+const $ = id => document.getElementById(id);
+
+function ageText(ts) {
+  const s = Math.max(1, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return s + 's old';
+  if (s < 3600) return Math.round(s / 60) + 'm old';
+  if (s < 86400) return Math.round(s / 3600) + 'h old';
+  return Math.round(s / 86400) + 'd old';
+}
+
+/* test date: plain "42 sec ago" / "2 min ago", no libraries, ticks every second */
+function agoText(ts) {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return s + ' sec ago';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+function utcText(ts) {
+  return new Date(ts * 1000).toISOString().replace('T', ' ').replace(/\..+/, ' UTC');
+}
+function renderTestDate() {
+  const el = $('testdate');
+  if (!lastFacts || !lastFacts.fetched_at) { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = 'tested ' + agoText(lastFacts.fetched_at);
+}
+
+/* Re-check cooldown: force re-probes of the same URL are allowed 3 minutes
+   after the last test; the button shows the countdown while waiting. */
+const RECHECK_COOLDOWN = 180;
+function countdownText(s) {
+  return s >= 60 ? Math.floor(s / 60) + ' min ' + (s % 60) + ' sec' : s + ' sec';
+}
+function renderRecheck() {
+  const el = $('recheck');
+  if (running) { el.disabled = true; el.textContent = 'Re-check'; return; }
+  if (!lastFacts) { el.disabled = true; return; }
+  if (!lastFacts.fetched_at) { el.disabled = false; el.textContent = 'Re-check'; return; }
+  const wait = RECHECK_COOLDOWN - Math.floor(Date.now() / 1000 - lastFacts.fetched_at);
+  if (wait > 0) {
+    el.disabled = true;
+    el.textContent = 'Re-check in ' + countdownText(wait);
+  } else {
+    el.disabled = false;
+    el.textContent = 'Re-check';
+  }
+}
+setInterval(function () { renderTestDate(); renderRecheck(); }, 1000);
+
+/* the expandible Technical info panel: everything we already know, readable */
+function techInfo(f) {
+  const g = f.get || {};
+  const meta = [];
+  if (lastJobId) meta.push('job <b class="mono">' + esc(lastJobId) + '</b>');
+  meta.push('level <b>' + esc(f.level) + '</b>');
+  if (lastForce) meta.push('forced re-check (caches bypassed)');
+  if (f.cached) meta.push('served from cache');
+  if (f.elapsed_ms !== undefined) meta.push('total probe time ' + f.elapsed_ms + ' ms');
+  if (lastPowBits.scan) {
+    meta.push('PoW solved: ' + lastPowBits.scan + '-bit submit / '
+      + (lastPowBits.poll ? lastPowBits.poll + '-bit poll' : 'poll off'));
+  }
+  if (f.fetched_at) meta.push('tested ' + utcText(f.fetched_at) + ' (' + agoText(f.fetched_at) + ')');
+  meta.push('build ' + BUILD);
+
+  const rows = [];
+  /* response pill: class picked from the FIRST-HOP status (what the edge did),
+     text carries the standard reason phrase, e.g. "405 Method Not Allowed" */
+  const pill = p => {
+    let c = 'mute', t = 'SKIP';
+    if (p.error) { t = 'ERR'; }
+    else if (!p.skipped) {
+      const s = p.first_status !== undefined ? p.first_status : p.status;
+      t = String(s) + (STATUS_NAMES[s] ? ' ' + STATUS_NAMES[s] : '');
+      if (s >= 200 && s < 400) c = 'done';
+      else if (s >= 400 && s < 500) c = 'block';
+      else if (s >= 500) c = 'err';
+    }
+    return '<span class="pill pill-' + c + '">' + t + '</span>';
+  };
+  const row = (label, sent, p) => {
+    if (!p) return;
+    const bits = [];
+    if (p.error) bits.push(p.error);
+    else if (!p.skipped) {
+      if (p.first_status !== undefined && p.first_status !== p.status) bits.push('→ ' + p.status);
+      if (p.redirects) bits.push('+' + p.redirects + ' redirect' + (p.redirects > 1 ? 's' : ''));
+    }
+    if (p.skipped && p.baseline_error) bits.push('baseline: ' + p.baseline_error);
+    if (p.proto) bits.push(p.proto);
+    if (p.ms !== undefined) bits.push(p.ms + ' ms');
+    let fin = '';
+    if (p.redirects && p.final_url) fin = '<div class="small">' + esc(p.final_url) + '</div>';
+    rows.push('<tr><td><b>' + label + '</b></td><td class="small">' + sent
+      + '</td><td class="mono">' + pill(p) + (bits.length ? ' ' + esc(bits.join(' · ')) : '') + fin + '</td></tr>');
+  };
+  row('GET', 'no body', g);
+  if (f.level === 'block') {
+    for (const [m, lab] of [['post', 'POST'], ['put', 'PUT'], ['patch', 'PATCH']]) {
+      row(lab + ' baseline', 'form-urlencoded · field <code>probe</code>', f[m + '_urlencoded']);
+      row(lab + ' multipart', 'multipart/form-data · 1 text field', f[m + '_multipart']);
+    }
+    row('POST fixation', 'multipart · PHPSESSID + probe fields (no file part)', f.post_fixation);
+  }
+  const hdrs = [];
+  if (g.server) hdrs.push('Server: ' + esc(g.server));
+  if (g.x_powered_by) hdrs.push('X-Powered-By: ' + esc(g.x_powered_by));
+  if (g.content_type) hdrs.push('Content-Type: ' + esc(g.content_type));
+  if (g.php_session_cookie) hdrs.push('PHP session cookie set');
+  return '<p class="small">' + meta.join(' · ') + '</p>'
+    + '<table class="tech"><tr><th>request</th><th>sent</th><th>response</th></tr>'
+    + rows.join('') + '</table>'
+    + (hdrs.length ? '<p class="small">GET response headers: ' + hdrs.join(' · ') + '</p>' : '');
+}
+
+function stText(p) {
+  if (!p) return '—';
+  if (p.error) return 'error: ' + p.error;
+  if (p.skipped) return 'skipped';
+  let t = p.status;
+  if (p.first_status !== undefined && p.first_status !== p.status) t = p.first_status + '→' + p.status;
+  if (p.redirects) t += ' (+' + p.redirects + ' redirect' + (p.redirects > 1 ? 's' : '') + ')';
+  return t;
+}
+
+function detailsText(f) {
+  const g = f.get || {};
+  const bits = [];
+  bits.push('GET ' + stText(g));
+  if (f.level === 'block') {
+    for (const [k, lab] of [['post', 'POST'], ['put', 'PUT'], ['patch', 'PATCH']]) {
+      if (f[k + '_multipart'] || f[k + '_urlencoded'])
+        bits.push(lab + '-x ' + stText(f[k + '_urlencoded']) + ', ' + lab + '-m ' + stText(f[k + '_multipart']));
+    }
+    if (f.post_fixation) bits.push('fixation ' + (f.post_fixation.sid_echo ? 'SID adopted' : stText(f.post_fixation)));
+  }
+  if (g.server) bits.push('Server: ' + g.server);
+  if (g.x_powered_by) bits.push('X-Powered-By: ' + g.x_powered_by);
+  if (g.php_session_cookie) bits.push('PHP session cookie');
+  bits.push(f.elapsed_ms + ' ms' + (f.cached ? ' · cached' + (f.fetched_at ? ' (' + ageText(f.fetched_at) + ')' : '') : ''));
+  return esc(bits.join(' · '));
+}
+
+function render(f) {
+  if (!f) return;
+  lastFacts = f;
+  $('rescard').hidden = false;
+  const v = interpret(f);
+  // header: plain black anchor pointing back at THIS check (the #url hash) —
+  // not an outbound link to the scanned site
+  const urlHtml = /^https?:\/\//i.test(f.url)
+    ? '<a class="selflink" href="?url=' + niceParam(f.url)
+      + '" title="Link to this check">' + esc(f.url) + '</a>'
+    : esc(f.url);
+  $('resurl').innerHTML = urlHtml;
+  $('verdict').innerHTML = chip(v.cls, v.label);
+  $('dimphp').innerHTML = chip(v.php.cls, v.php.text);
+  $('dimblk').innerHTML = v.blk ? chip(v.blk.cls, v.blk.text) : '<span class="small">not tested</span>';
+  $('dimfix').innerHTML = v.fix ? chip(v.fix.cls, v.fix.text) : '<span class="small">not tested</span>';
+  $('resdetails').innerHTML = detailsText(f);
+  renderTestDate();
+  renderRecheck();
+  $('tech').innerHTML = techInfo(f);
+  $('raw').textContent = JSON.stringify(f, null, 2);
+  $('techcard').hidden = false;
+}
+
+/* ------------------------------------------------------------------- polling */
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function spinner(on) { $('spinner').hidden = !on; }   // shown while PoW is solving
+
+async function postJSON(url, obj, signal) {
+  const r = await fetch(url, {
+    method: 'POST', signal, cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(obj),
+  });
+  return { status: r.status, data: await r.json() };
+}
+async function getJSON(url, signal) {
+  const r = await fetch(url, { signal, cache: 'no-store' });
+  return { status: r.status, data: await r.json() };
+}
+
+/* ----------------------------------------------------------- proof of work */
+/* Hashcash-style abuse brake: GET /api/pow issues a one-time challenge; the
+   client finds a nonce so SHA-256("<id>:<nonce>") has >= bits leading zero
+   bits. Submissions cost ~1s of CPU, polls cost milliseconds. Compact
+   public-domain SHA-256 below (ASCII input only - challenges are hex). */
+
+function sha256(ascii) {
+  function rr(v, a) { return (v >>> a) | (v << (32 - a)); }
+  const maxWord = Math.pow(2, 32);
+  let result = '';
+  const words = [], asciiBitLength = ascii.length * 8;
+  let hash = sha256.h = sha256.h || [], k = sha256.k = sha256.k || [];
+  let primeCounter = k.length;
+  const isComposite = {};
+  for (let candidate = 2; primeCounter < 64; candidate++) {
+    if (!isComposite[candidate]) {
+      for (let i = 0; i < 313; i += candidate) isComposite[i] = candidate;
+      hash[primeCounter] = (Math.pow(candidate, 0.5) * maxWord) | 0;
+      k[primeCounter++] = (Math.pow(candidate, 1 / 3) * maxWord) | 0;
+    }
+  }
+  ascii += '\x80';
+  while (ascii.length % 64 - 56) ascii += '\x00';
+  for (let i = 0; i < ascii.length; i++) {
+    const j = ascii.charCodeAt(i);
+    if (j >> 8) return null;
+    words[i >> 2] |= j << ((3 - i) % 4) * 8;
+  }
+  words[words.length] = (asciiBitLength / maxWord) | 0;
+  words[words.length] = asciiBitLength;
+  for (let j = 0; j < words.length;) {
+    const w = words.slice(j, j += 16), oldHash = hash;
+    hash = hash.slice(0, 8);
+    for (let i = 0; i < 64; i++) {
+      const w15 = w[i - 15], w2 = w[i - 2];
+      const a = hash[0], e = hash[4];
+      const temp1 = hash[7]
+        + (rr(e, 6) ^ rr(e, 11) ^ rr(e, 25))
+        + ((e & hash[5]) ^ ((~e) & hash[6]))
+        + k[i]
+        + (w[i] = (i < 16) ? w[i] : (w[i - 16]
+          + (rr(w15, 7) ^ rr(w15, 18) ^ (w15 >>> 3))
+          + w[i - 7]
+          + (rr(w2, 17) ^ rr(w2, 19) ^ (w2 >>> 10))) | 0);
+      const temp2 = (rr(a, 2) ^ rr(a, 13) ^ rr(a, 22))
+        + ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+      hash = [(temp1 + temp2) | 0].concat(hash);
+      hash[4] = (hash[4] + temp1) | 0;
+    }
+    for (let i = 0; i < 8; i++) hash[i] = (hash[i] + oldHash[i]) | 0;
+  }
+  for (let i = 0; i < 8; i++) {
+    for (let j = 3; j + 1; j--) {
+      const b = (hash[i] >> (j * 8)) & 255;
+      result += ((b < 16) ? '0' : '') + b.toString(16);
+    }
+  }
+  return result;
+}
+
+function leadZeroBits(hex) {
+  let bits = 0;
+  for (let i = 0; i < hex.length; i++) {
+    const v = parseInt(hex[i], 16);
+    if (v === 0) { bits += 4; continue; }
+    return bits + (Math.clz32(v) - 28);   // clz inside the 4-bit nibble
+  }
+  return bits;
+}
+
+async function getPow(purpose, signal) {
+  const r = await getJSON('/api/pow?for=' + purpose, signal);
+  if (r.status !== 200) throw new Error((r.data && r.data.error) || 'PoW challenge failed');
+  return r.data;
+}
+
+/* nicer ?url= param: strip scheme + trailing slash, keep : / ? = . - _ literal
+   and show '&' as '~' so the value never splits the query string */
+function niceParam(u) {
+  return encodeURIComponent(String(u).replace(/^https?:\/\//i, '').replace(/\/+$/, ''))
+    .replace(/%3A/gi, ':').replace(/%2F/gi, '/')
+    .replace(/%3F/gi, '?').replace(/%3D/gi, '=').replace(/%26/gi, '~');
+}
+
+/* pre-warm: fetch + solve the scan PoW in the background so the first Check
+   feels instant. Idle-scheduled, no spinner, never blocks input; discarded
+   when stale (server TTL 180s - we give up at 120s) or after first use. */
+let prewarm = null;
+function prewarmPow() {
+  if (running || prewarm) return;
+  prewarm = { ts: Date.now(), ch: null, pow: null };
+  getPow('scan').then(ch => {
+    if (!prewarm) return null;
+    prewarm.ch = ch;
+    return solvePow(ch).then(pow => { if (prewarm) prewarm.pow = pow; });
+  }).catch(() => { prewarm = null; });
+}
+function takePrewarm() {
+  const p = (prewarm && prewarm.pow && Date.now() - prewarm.ts <= 120000)
+    ? { ch: prewarm.ch, pow: prewarm.pow } : null;
+  prewarm = null;
+  return p;
+}
+
+async function solvePow(ch, signal) {
+  if (!ch || ch.disabled || !ch.bits) return null;   // server has PoW disabled
+  let n = 0, spin = 0;
+  while (true) {
+    if (signal && signal.aborted) {
+      const e = new Error('aborted'); e.name = 'AbortError'; throw e;
+    }
+    const nonce = n.toString(16);
+    if (leadZeroBits(sha256(ch.id + ':' + nonce)) >= ch.bits) return { id: ch.id, nonce };
+    n++;
+    if (++spin >= 16384) { spin = 0; await sleep(0); }   // keep the tab responsive
+  }
+}
+
+async function loadReleases() {
+  // Read-only: the patched list is maintained server-side (POST /api/releases
+  // with the operator token); refreshed on load and while polling so operator
+  // updates change verdicts live. No per-browser configuration exists.
+  try {
+    const r = await getJSON('/api/releases');
+    if (r.status === 200 && Array.isArray(r.data.patched_releases)) {
+      const changed = r.data.patched_releases.join(',') !== SERVER_RELEASES.join(',');
+      SERVER_RELEASES = r.data.patched_releases;
+      $('releasestate').textContent = SERVER_RELEASES.length
+        ? 'Patched PHP releases on this service: ' + SERVER_RELEASES.join(', ')
+          + ' — per-branch: a version ≥ its branch’s entry counts as patched;'
+          + ' PHP 5/6/7 always count as unpatched (EOL, no fix).'
+        : 'Patched PHP releases: none set yet — version verdicts stay “unknown” until'
+          + ' the operator loads the advisory list.';
+      if (changed) render(lastFacts);   // re-interpret with the fresh list
+    }
+  } catch (_) {}
+}
+
+async function run(force, urlOverride) {
+  if (running) return;
+  const raw = String(urlOverride || $('url').value).trim();
+  if (!raw) { $('progtext').textContent = 'enter a URL first'; return; }
+  let url = raw;
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = 'https://' + url;
+  if (!/^https?:\/\//i.test(url)) { $('progtext').textContent = 'http/https URLs only'; return; }
+  lastUrl = url;
+  // shareable state in a REAL query param (lets link previews render an OG
+  // image server-side). pushState = no reload on Enter; back button walks
+  // previous checks. Nicer form: scheme + trailing slash stripped, '&' shown
+  // as '~'. The URL is still only in the address bar, never sent anywhere
+  // by this page itself.
+  try { history.pushState(null, '', '?url=' + niceParam(url)); }
+  catch (_) { try { location.hash = '#' + encodeURIComponent(url); } catch (_e) {} }
+  running = true;
+  controller = new AbortController();
+  $('go').disabled = true;
+  $('recheck').disabled = true;
+  $('progress').style.width = '0%';
+  $('progtext').textContent = 'proof of work…';
+  try {
+    const pre = takePrewarm();   // background-solved on load: instant submit
+    let ch, pow;
+    if (pre) {
+      ch = pre.ch; pow = pre.pow;
+      lastPowBits.scan = ch.bits || 0;
+    } else {
+      spinner(true);
+      ch = await getPow('scan', controller.signal);
+      lastPowBits.scan = ch.bits || 0;
+      pow = await solvePow(ch, controller.signal);
+      spinner(false);
+    }
+    $('progtext').textContent = 'submitting…';
+    const body = { urls: [url], level: 'block', force: !!force };
+    if (pow) body.pow = pow;
+    const r = await postJSON('/api/scan', body, controller.signal);
+    if (r.status !== 200) throw new Error(r.data.error || ('HTTP ' + r.status));
+    lastJobId = r.data.job_id;
+    lastForce = !!force;
+    await poll(r.data.job_id);
+  } catch (e) {
+    if (e.name !== 'AbortError') $('progtext').textContent = 'error: ' + e.message;
+  } finally {
+    running = false; controller = null;
+    spinner(false);
+    $('go').disabled = false;
+    renderRecheck();
+    setTimeout(prewarmPow, 1500);   // re-arm for the next check
+  }
+}
+
+async function poll(jobId) {
+  let delay = 1200;
+  let finished = false;
+  while (true) {
+    // every poll needs a fresh (cheap) PoW - CPU-throttles polling loops.
+    // No spinner here: the poll PoW solves in milliseconds and a flashing
+    // spinner every cycle reads as "stuck". The spinner is for the one slow
+    // generation before submission.
+    const ch = await getPow('status', controller.signal);
+    lastPowBits.poll = ch.bits || 0;
+    const pow = await solvePow(ch, controller.signal);
+    const qs = pow ? '?pow_id=' + pow.id + '&pow_nonce=' + pow.nonce : '';
+    const r = await getJSON('/api/job/' + jobId + qs, controller.signal);
+    if (r.status !== 200) { $('progtext').textContent = 'job unknown or expired'; break; }
+    const d = r.data;
+    const f = d.results && (d.results[lastUrl] || d.results[d.urls[0]]);
+    if (f) render(f);
+    $('progress').style.width = (d.total ? Math.round(100 * d.done / d.total) : 0) + '%';
+    $('progtext').textContent = d.done + ' / ' + d.total
+      + (d.state !== 'done' && d.queue_position ? ' · queue position ' + d.queue_position : '');
+    if (d.state === 'done') { finished = true; break; }
+    loadReleases();   // keep the shared list fresh while waiting
+    await sleep(delay);
+    delay = Math.min(delay + 200, 3000);   // gentle backoff
+  }
+  if (finished) $('progtext').textContent += ' — done';
+}
+
+/* ------------------------------------------------------------- dark mode */
+
+function isDark() {
+  const t = document.documentElement && document.documentElement.dataset
+    ? document.documentElement.dataset.theme : null;
+  if (t) return t === 'dark';
+  try { return matchMedia('(prefers-color-scheme: dark)').matches; }
+  catch (_) { return false; }
+}
+function applyThemeIcon() {
+  $('themebtn').textContent = isDark() ? '\u2600' : '\u263E';   // sun / moon
+}
+$('themebtn').addEventListener('click', () => {
+  const next = isDark() ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('theme', next); } catch (_) {}   // presentation only
+  applyThemeIcon();
+});
+(function initTheme() {
+  try {
+    const stored = localStorage.getItem('theme');
+    if (stored === 'dark' || stored === 'light') {
+      document.documentElement.dataset.theme = stored;
+    }
+  } catch (_) {}   // no storage: just follow prefers-color-scheme
+  applyThemeIcon();
+})();
+
+/* ------------------------------------------------------------------ init */
+
+$('buildline').textContent = 'build ' + BUILD;
+$('go').addEventListener('click', () => run(false));
+$('url').addEventListener('keydown', e => { if (e.key === 'Enter') run(false); });
+$('recheck').addEventListener('click', () => run(true, lastUrl));
+loadReleases();
+setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
+
+// shareable results: open with ?url=<u> (or legacy #<u>) to pre-fill and run
+(function fromParam() {
+  let u = '';
+  const m = /[?&]url=([^&]*)/.exec(location.search || '');
+  if (m) {
+    try { u = decodeURIComponent(m[1].replace(/~/g, '%26')).trim(); } catch (_) { u = ''; }
+  }
+  if (!u && location.hash) {
+    try { u = decodeURIComponent(location.hash.slice(1)); } catch (_) { u = ''; }
+  }
+  if (u) { $('url').value = u; run(false); }
+})();
+
+// advisory countdown: patched-release list lands at 14:00 UTC, 21 Oct 2026
+(function advisoryCountdown() {
+  const target = Date.UTC(2026, 9, 21, 14, 0, 0);
+  const el = $('advisorycount');
+  const pad = n => (n < 10 ? '0' : '') + n;
+  let t = null;
+  function tick() {
+    const ms = target - Date.now();
+    if (ms <= 0) { el.textContent = 'T-00:00:00 · reached'; if (t) clearInterval(t); return; }
+    const s = Math.floor(ms / 1000);
+    el.textContent = 'T-' + pad(Math.floor(s / 3600)) + ':' +
+                     pad(Math.floor((s % 3600) / 60)) + ':' + pad(s % 60);
+  }
+  tick();
+  t = setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

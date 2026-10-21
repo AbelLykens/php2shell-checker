@@ -1,0 +1,71 @@
+# php2shell check — p2s.cheeserobot.org
+
+Public checker for the patch & mitigation status of CVE-2026-109618 / CVE-2026-109619
+(PHP `session.upload_progress` use-after-free; "php2shell"). One URL at a time,
+submitted at `/?url=<host>` or through the JSON API below.
+
+## What it does
+
+It probes a URL you name with a handful of INERT requests and reports which
+defenses against CVE-2026-109618/619 are observable from the outside:
+
+- a version banner check (X-Powered-By / Server headers vs. the patched
+  release list: 8.2.35, 8.3.36, 8.4.27, 8.5.12),
+- a multipart reachability test across POST/PUT/PATCH (urlencoded baseline +
+  one text-field multipart per method — no file part, no upload-progress
+  field, nothing exploit-shaped, never stalling),
+- a session-fixation probe: one multipart POST whose first field is a random
+  session id; if the response Set-Cookie adopts OUR id, the app accepts
+  attacker-chosen session ids — the precondition the CVE chains build on.
+
+## Verdicts
+
+- PATCHED (green): a PHP version banner at or above a fixed release.
+- UNPATCHED (red): a PHP version banner below a fixed release.
+- BLOCKED (green): every multipart-family request is rejected by an edge
+  rule (WAF/CDN) before a parser sees it.
+- ASSUMED VULNERABLE (red): multipart requests reach the backend and no
+  patched runtime could be confirmed — or the fixation probe was adopted.
+- NO PHP DETECTED (green): nothing POST-shaped is processed and there are
+  zero PHP indicators (no banner, no session cookie) — consistent with a
+  static site; nothing to exploit at that URL.
+- OFFLINE (green): the URL refuses connections; nothing is serving.
+- UNKNOWN: anything not covered above (remote probing cannot see everything;
+  the checker says so instead of over-claiming).
+
+## Honest limits
+
+- Results are best-effort indications from the OUTSIDE. NO GUARANTEES:
+  banners can lie, caches can hide the origin, edges behave differently per
+  route. This is NOT a vulnerability assessment — verify on the host.
+- A CDN/WAF block only helps if the origin is not directly reachable.
+- Edge-level and app-level rejections with the same status cannot be told
+  apart remotely.
+- The deeper exploit chains (var_destroy UAF, handler mismatch, filename→LFI)
+  need host-side access or exploit-shaped traffic and are deliberately NOT
+  tested by this service.
+
+## API (JSON)
+
+- GET  /api/health — liveness + build info.
+- GET  /api/releases — the patched-release list used for version verdicts.
+- GET  /api/pow?for=scan|status — proof-of-work challenge (single-use, TTL).
+- POST /api/scan — body: {"url": "https://…", "level": "banner|block",
+  "force": bool, "pow": {"id","nonce"}} → {"job_id"}; one URL per job.
+- GET  /api/job/<id>?pow_id=…&pow_nonce=… — poll a job (needs its own PoW).
+- GET  /api/og?url=<u> — 1200x630 PNG preview card of the stored result
+  (read-only; never triggers a scan).
+- GET  /llms.txt — this file.
+
+Every scan submission and every poll must present a fresh proof-of-work
+solution (browser-side ~1s) as an abuse brake. Results are stored server-side
+(URL, verdict facts, timestamp) and shared between visitors: the second person
+to check the same URL gets the cached result.
+
+## Probes are inert by design
+
+The service never sends: session cookies, PHP_SESSION_UPLOAD_PROGRESS fields,
+file parts, oversized/stalling bodies, or any exploit payload. It only observes
+banners, statuses, redirect behavior and Set-Cookie echo. Telemetry: the
+probes identify as a scanner UA and are documented in the project's
+detections/ notes for SOC filtering.
