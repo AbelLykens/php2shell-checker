@@ -314,7 +314,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.56";
+const BUILD = "2026-10-21.57";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -1744,9 +1744,18 @@ setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
   } else if (!$('url').value) {
     // new visitor on the bare homepage: a ready-to-run example target
     // (not auto-checked; Check runs it)
-    $('url').value = 'news.ycombinator.com';
+    const EXAMPLE = 'news.ycombinator.com';
+    $('url').value = EXAMPLE;
     renderRecheck();
     renderDiyScript();
+    // first click/tab into the box clears the untouched example
+    $('url').addEventListener('focus', function clearExample() {
+      $('url').removeEventListener('focus', clearExample);
+      if ($('url').value !== EXAMPLE) return;
+      $('url').value = '';
+      renderRecheck();
+      renderDiyScript();
+    });
   }
 })();
 
