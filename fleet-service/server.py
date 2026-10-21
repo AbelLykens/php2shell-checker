@@ -368,6 +368,63 @@ def fixation_probe_body(sid):
     return body, {"Content-Type": "multipart/form-data; boundary=%s" % BOUNDARY}
 
 
+def sanitize_target(u):
+    """Strict sanity for one scan target. Returns (clean_url, None) or
+    (None, reason). Deliberately conservative - this is the front door for
+    requests WE send, so anything odd is refused before a job is created:
+
+    - absolute http(s) URL only (bare hosts get https:// prepended)
+    - NO query parameters, NO fragment, NO path traversal (../ or ..\\)
+    - no whitespace/control characters, no backslashes, no userinfo
+    - host must be a dotted DNS name or an IP literal (single-label names
+      like `localhost` are refused - they only ever point inwards)
+    """
+    if not isinstance(u, str):
+        return None, "URL must be a string"
+    u = u.strip()
+    if not u:
+        return None, "empty URL"
+    if len(u) > 2048:
+        return None, "URL too long (max 2048)"
+    if re.search(r"[\s\x00-\x1f\x7f]", u):
+        return None, "whitespace or control characters in URL"
+    if "\\" in u:
+        return None, "backslashes not allowed in URL"
+    if re.search(r"(^|/)\.\.(/|$)", u):
+        return None, "path traversal (..) not allowed"
+    if "?" in u:
+        return None, "query parameters not allowed - scan the bare path"
+    if "#" in u:
+        return None, "fragments (#) are never sent - submit the URL without it"
+    if not re.match(r"^[a-z][a-z0-9+.\-]*://", u, re.I):
+        u = "https://" + u
+    if not re.match(r"^https?://", u, re.I):
+        return None, "only http(s) URLs are scanned"
+    try:
+        sp = urllib.parse.urlsplit(u)
+        sp.port   # validates the port
+    except ValueError:
+        return None, "invalid port in URL"
+    netloc = sp.netloc
+    if "@" in netloc:
+        return None, "credentials in URL not allowed"
+    host = sp.hostname or ""
+    if not host or "%" in host:
+        return None, "missing or malformed host"
+    if not (re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host)
+            or re.fullmatch(r"[0-9a-f:]+", host, re.I)):   # v4 / v6 literal
+        host = host.rstrip(".")
+        if "." not in host:
+            return None, "single-label host refused (use a public DNS name)"
+        if len(host) > 253 or not all(
+                re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", l, re.I)
+                for l in host.split(".")):
+            return None, "malformed host name"
+    clean = urllib.parse.urlunsplit(
+        (sp.scheme.lower(), netloc.lower(), sp.path or "", "", ""))
+    return clean, None
+
+
 def probe_url(url, level, cfg, allowlist):
     """Full fact-gathering for one URL. Never sends exploit-shaped traffic."""
     facts = {"url": url, "level": level}
@@ -1474,6 +1531,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._update_releases(data)
             if path != "/api/scan":
                 return self._json({"error": "not found"}, 404)
+            # front-door URL sanity BEFORE the PoW check: a bad target must
+            # not cost the client its solved challenge
+            urls_in = data.get("urls")
+            if not isinstance(urls_in, list) or not urls_in:
+                return self._json({"error": "urls must be a non-empty list"}, 422)
+            urls = []
+            for u in urls_in:
+                cu, err = sanitize_target(u)
+                if err:
+                    return self._json(
+                        {"error": "rejected %s: %s" % (str(u)[:200], err)}, 422)
+                urls.append(cu)
             # submissions must carry a solved PoW challenge (verified + burned)
             pow_data = data.get("pow")
             if not isinstance(pow_data, dict):
@@ -1483,7 +1552,7 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 return self._json({"error": err}, 401)
             job_id, total, err = self.state.submit(
-                data.get("urls"), data.get("level", "banner"),
+                urls, data.get("level", "banner"),
                 self._client_ip(), force=bool(data.get("force", False))
             )
             if err:

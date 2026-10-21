@@ -213,7 +213,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.8";
+const BUILD = "2026-10-21.9";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -642,6 +642,16 @@ function leadZeroBits(hex) {
   return bits;
 }
 
+/* scan-target sanity (mirrors the server's sanitize_target): query parameters
+   and fragments are cut off, path traversal (../) and backslashes are rejected
+   outright. Scanning is param-free and path-exact. Returns the cleaned URL,
+   or null when the input must be rejected. */
+function stripUrlParts(u) {
+  if (u.indexOf('\\') !== -1) return null;
+  if (/(^|\/)\.\.(\/|$|\?|#)/.test(u)) return null;
+  return u.replace(/[?#][\s\S]*$/, '');
+}
+
 async function getPow(purpose, signal) {
   const r = await getJSON('/api/pow?for=' + purpose, signal);
   if (r.status !== 200) throw new Error((r.data && r.data.error) || 'PoW challenge failed');
@@ -714,6 +724,19 @@ async function run(force, urlOverride) {
   if (running) return;
   const raw = String(urlOverride || $('url').value).trim();
   if (!raw) { $('progtext').textContent = 'enter a URL first'; return; }
+  // sanity gate (the server rejects these too): parameters/fragments are
+  // stripped and put back into the box - the check only runs after the
+  // user submits the CLEANED address on purpose. Traversal is refused.
+  const clean = stripUrlParts(raw);
+  if (clean === null) {
+    $('progtext').textContent = 'path traversal (../) is not allowed';
+    return;
+  }
+  if (clean !== raw) {
+    $('url').value = clean;
+    $('progtext').textContent = 'URL parameters stripped \u2014 check the cleaned address and press Check again';
+    return;
+  }
   let url = raw;
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = 'https://' + url;
   if (!/^https?:\/\//i.test(url)) { $('progtext').textContent = 'http/https URLs only'; return; }
