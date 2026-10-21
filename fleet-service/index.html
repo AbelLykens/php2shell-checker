@@ -264,7 +264,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.44";
+const BUILD = "2026-10-21.45";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -624,20 +624,25 @@ let lastForce = false;
 let lastPowBits = { scan: 0, poll: 0 };   // difficulties we solved, shown as tech info
 let running = false;
 
-/* www <-> bare-domain redirect: the probes all land on the other variant, so
-   checking this name tests nothing - move the whole page to the destination
-   and check that instead. wwwFollowed guards against ping-pong. */
-const wwwFollowed = new Set();
-function wwwTwin(f) {
+/* the homepage redirects to ANOTHER host that serves a real page (2xx):
+   that destination is the site people actually use (bluray.com ->
+   www.blu-ray.com, example.com -> www.example.com), so move the whole page
+   there and check it. Redirects ending in an error (consent walls, logins
+   answering 403/404) are not followed. `followed` guards against ping-pong;
+   followVia keeps "from -> to" in the result header. */
+const followed = new Set();
+let followVia = null;
+function redirectDest(f) {
   const g = (f && f.get) || {};
-  if (!(g.redirects | 0) || !g.final_url) return '';
+  if (!(g.redirects | 0) || !g.final_url || !(g.status >= 200 && g.status < 300)) return '';
   const a = bareDomain(hostOf(f.url)), b = bareDomain(hostOf(g.final_url));
-  if (!a || !b || a === b || wwwFollowed.has(b)) return '';
-  return (a === 'www.' + b || b === 'www.' + a) ? b : '';
+  if (!a || !b || a === b || followed.has(b)) return '';
+  return b;
 }
-function followWww(to, from) {
-  wwwFollowed.add(from);
-  wwwFollowed.add(to);
+function followRedirect(to, from) {
+  followed.add(from);
+  followed.add(to);
+  followVia = { from, to };
   $('url').value = to;
   run(false, to).then(() => {
     if (!$('progtext').textContent)
@@ -992,12 +997,18 @@ function render(f) {
     // test are all port-insensitive (share links are bare domains)
     const endHost = bareDomain(hostOf(redirProbe.final_url));
     const origHost = bareDomain(hostOf(f.url));
-    if (endHost && origHost && endHost !== origHost && (redirProbe.redirects | 0) > 0) {
+    if (followVia && origHost === followVia.to) {
+      // followed redirect: "from -> to", the verdict below is the destination's
+      redirHtml = '';
+    } else if (endHost && origHost && endHost !== origHost && (redirProbe.redirects | 0) > 0) {
       redirHtml = ' <span class="redir">→ <a class="selflink" href="/'
         + niceParam(endHost) + '" title="redirected ' + (redirProbe.redirects | 0)
         + '× — check the destination domain">' + esc(endHost) + '</a></span>';
     }
   } catch (_) {}
+  const viaHtml = (followVia && bareDomain(hostOf(f.url)) === followVia.to)
+    ? '<a class="selflink" href="/' + niceParam(followVia.from) + '" title="Checked first; it redirects here">'
+      + esc(followVia.from) + '</a> <span class="redir">\u2192 ' : '';
   // open icon: visits the checked site itself in a new window (no referrer)
   const openHtml = /^https?:\/\//i.test(f.url)
     ? ' <a class="openlink" href="' + esc(f.url) + '" target="_blank" rel="noopener noreferrer"'
@@ -1005,7 +1016,8 @@ function render(f) {
       + '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2 7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"'
       + ' fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>'
     : '';
-  $('resurl').innerHTML = urlHtml + redirHtml + openHtml;
+  $('resurl').innerHTML = viaHtml ? viaHtml + urlHtml + '</span>' + openHtml
+    : urlHtml + redirHtml + openHtml;
   setFavicon(v.cls);
   document.title = 'php2shell.site \u2014 ' + (shown || 'check');
   $('verdict').innerHTML = chip(v.cls, shownLabel(v.label));
@@ -1257,6 +1269,7 @@ async function run(force, urlOverride) {
   }
   if (clean !== raw) $('url').value = clean;
   const url = 'https://' + clean;   // always https, whatever was typed
+  if (followVia && followVia.to !== clean) followVia = null;   // a new target
   lastUrl = url;
   // shareable state: the path after "/" IS the checked URL (scheme and
   // trailing slash stripped). pushState = no reload on Enter; back button
@@ -1359,8 +1372,8 @@ async function run(force, urlOverride) {
     $('bar').hidden = true;   // done (or failed): no dangling progress bar
     $('go').disabled = false;
     renderRecheck();
-    const twin = wwwTwin(lastFacts);
-    if (twin) { followWww(twin, bareDomain(hostOf(lastFacts.url))); return; }
+    const dest = redirectDest(lastFacts);
+    if (dest) { followRedirect(dest, bareDomain(hostOf(lastFacts.url))); return; }
     setTimeout(prewarmPow, 1500);   // re-arm for the next check
   }
 }
@@ -1583,8 +1596,8 @@ setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
             // re-probe - the Re-check button unlocks 3 min after the test
             lastUrl = 'https://' + clean;
             render(r.data.facts);
-            const twin = wwwTwin(r.data.facts);
-            if (twin) followWww(twin, clean);
+            const dest = redirectDest(r.data.facts);
+            if (dest) followRedirect(dest, clean);
             return;
           }
         } catch (_) {}

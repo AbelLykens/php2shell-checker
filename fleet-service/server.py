@@ -1307,10 +1307,26 @@ class ServiceState(object):
         if hit is not None:
             return hit
         facts = self.stored_facts(url)
+        via_facts, via = self.followed_facts(facts)
+        if via_facts is not None:
+            # depends on ANOTHER host's result: rendered fresh, not cached
+            return og_png(via_facts, self.get_releases(), via=via)
         png = og_png(facts, self.get_releases())
         if self.og is not None:
             self.og.put(url, png)
         return png
+
+    def followed_facts(self, facts):
+        """(destination facts, origin shown) when these facts redirect the
+        whole site to another host that has a stored result; else (None, None).
+        The page follows such redirects, so previews must show the same."""
+        dest = redirect_dest(facts)
+        if not dest:
+            return None, None
+        dfacts = self.stored_facts("https://" + dest)
+        if dfacts is None:
+            return None, None
+        return dfacts, _host_of(facts.get("url"))
 
     def stored_facts(self, url):
         """Newest stored block-level facts for a normalized URL (memcached,
@@ -1752,6 +1768,17 @@ def shown_label(label):
     return _VERDICT_SHOWN.get(label, label)
 
 
+def redirect_dest(facts):
+    """Mirror of the client's redirectDest: the homepage GET redirected to
+    ANOTHER host that served a real page (2xx) -> that host, else None."""
+    g = (facts or {}).get("get") or {}
+    if not (g.get("redirects") or 0) or not g.get("final_url") \
+            or not 200 <= (g.get("status") or 0) < 300:
+        return None
+    a, b = _host_of(facts.get("url")), _host_of(g.get("final_url"))
+    return b if a and b and a != b else None
+
+
 def finding_summary(facts, releases):
     """One line for link previews (og:description): verdict + the two
     findings, e.g. 'ASSUMED VULNERABLE — NOT BLOCKED — test uploads were
@@ -1843,7 +1870,7 @@ def _norm_target(raw):
     )
 
 
-def og_png(facts, releases):
+def og_png(facts, releases, via=None):
     """Render the dark-mode result card as a PNG. facts=None -> 'not tested'."""
     if _HAVE_PIL:
         img = Image.new("RGB", (OG_W, OG_H), _OG_C["bg"])
@@ -1880,6 +1907,8 @@ def og_png(facts, releases):
             orig_h = _host_of(facts.get("url"))
             redir = end_h and orig_h and end_h != orig_h \
                 and (redir_p.get("redirects") or 0) > 0
+            if via:   # followed redirect: "origin -> this host", this host's verdict
+                shown, end_h, redir = via, _host_of(facts.get("url")), True
             shown = _og_text_fit(d, shown, f_url, mx)
             d.text((80, 116), shown, font=f_url, fill=_OG_C["fg"])
             if redir:
@@ -2095,9 +2124,14 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     facts = None
                 shown = re.sub(r"^https?://", "", u, flags=re.I).rstrip("/")
-                desc = (finding_summary(facts, self.state.get_releases()) if facts
-                        else "Not checked yet — open to check %s for "
-                             "CVE-2026-109618/619 (PHP upload parsing)." % shown)
+                via_facts, _via = self.state.followed_facts(facts) if facts else (None, None)
+                if via_facts is not None:
+                    desc = "%s → %s: %s" % (shown, _host_of(via_facts.get("url")),
+                                            finding_summary(via_facts, self.state.get_releases()))
+                else:
+                    desc = (finding_summary(facts, self.state.get_releases()) if facts
+                            else "Not checked yet — open to check %s for "
+                                 "CVE-2026-109618/619 (PHP upload parsing)." % shown)
                 meta = (
                     '<meta property="og:title" content="php2shell check — %s">\n'
                     '  <meta property="og:description" content="%s">\n'
