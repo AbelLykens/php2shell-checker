@@ -167,6 +167,7 @@
      <a href="https://www.php.net/archive/2026.php#2026-10-21-5" target="_blank" rel="noopener">CVE-2026-109618 / CVE-2026-109619</a>, two critical
      unauthenticated remote-code-execution bugs in PHP, for URLs you are authorized to test.
      All verdict logic runs locally in your browser — the server only relays raw HTTP facts.</p>
+  <p class="small" id="statsline" style="margin:-4px 0 10px;color:var(--muted)" hidden></p>
 
   <div class="card">
     <div class="row" style="margin-top:0">
@@ -314,7 +315,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.57";
+const BUILD = "2026-10-21.58";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -1368,6 +1369,18 @@ async function solvePow(ch, signal) {
   }
 }
 
+/* public counters (refreshed server-side every minute, memcached) */
+async function loadStats() {
+  try {
+    const r = await getJSON('/api/stats');
+    const d = r.data || {};
+    if (r.status !== 200 || !d.sites) return;
+    const n = x => Number(x).toLocaleString('en-US');
+    $('statsline').textContent = n(d.sites) + ' sites checked \u00b7 ' + n(d.checks) + ' checks run';
+    $('statsline').hidden = false;
+  } catch (_) {}
+}
+
 async function loadReleases() {
   // Read-only: the patched list is maintained server-side (POST /api/releases
   // with the operator token); refreshed on load and while polling so operator
@@ -1678,6 +1691,7 @@ $('url').addEventListener('input', () => {
 });
 renderDiyScript();
 loadReleases();
+loadStats();
 setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
 
 // shareable results: open with /<domain> or /<domain>/<finding_key>

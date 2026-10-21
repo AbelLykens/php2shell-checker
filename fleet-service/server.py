@@ -1342,6 +1342,30 @@ class ServiceState(object):
             self.og.put(url, png)
         return png
 
+    def public_stats(self):
+        """{"sites", "checks", "updated"} - computed every minute by the
+        p2s-stats timer (ops script) into memcached p2s:stats, with
+        stats.json next to the DB as fallback. Read-only, no DB work."""
+        raw = None
+        if self.mc is not None:
+            try:
+                raw = self.mc.get("p2s:stats")
+            except Exception:
+                raw = None
+        if not raw and self.cfg.get("db_path"):
+            try:
+                with open(os.path.join(os.path.dirname(os.path.abspath(
+                        self.cfg["db_path"])), "stats.json"), "rb") as f:
+                    raw = f.read()
+            except OSError:
+                raw = None
+        try:
+            d = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+            return {"sites": int(d["sites"]), "checks": int(d["checks"]),
+                    "updated": int(d.get("updated") or 0)}
+        except Exception:
+            return {"sites": None, "checks": None, "updated": None}
+
     def followed_facts(self, facts):
         """(destination facts, origin shown) when these facts redirect the
         whole site to another host that has a stored result; else (None, None).
@@ -2223,7 +2247,7 @@ class Handler(BaseHTTPRequestHandler):
     # HEAD = GET without a body: link-preview bots (Skype, crawlers) probe
     # with HEAD first and got 501. API endpoints other than these refuse
     # HEAD, so it can never burn a PoW challenge or poll a job.
-    _HEAD_API_OK = ("/api/og", "/api/health", "/api/releases")
+    _HEAD_API_OK = ("/api/og", "/api/health", "/api/releases", "/api/stats")
 
     class _NoBody(object):
         def write(self, b):
@@ -2406,6 +2430,8 @@ class Handler(BaseHTTPRequestHandler):
             path = urllib.parse.urlsplit(self.path).path
             if path == "/api/health":
                 return self._json(self.state.health())
+            if path == "/api/stats":
+                return self._json(self.state.public_stats())
             if path == "/api/releases":
                 return self._json(
                     {"patched_releases": self.state.get_releases()})
