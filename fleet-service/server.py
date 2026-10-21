@@ -167,10 +167,32 @@ HEADER_MAP = {
     "x-powered-by": "x_powered_by",
     "content-type": "content_type",
     "location": "location",
+    # stack hints (PHP CMS generators / ASP.NET) for the "if PHP / if not" view
+    "x-generator": "x_generator",
+    "x-aspnet-version": "x_aspnet_version",
 }
 
 # Session cookies that reveal a PHP runtime behind a hidden version banner.
 _SESSION_COOKIES = ("phpsessid", "laravel_session")
+
+
+_COOKIE_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]{1,48}$")
+
+
+def _cookie_names(headers):
+    """NAMES of the cookies a response sets (never values), deduplicated,
+    max 12 - stack hints such as JSESSIONID (Java) or SESS<hex> (Drupal)."""
+    try:
+        cookies = headers.get_all("Set-Cookie") or []
+    except AttributeError:
+        v = headers.get("Set-Cookie")
+        cookies = [v] if v else []
+    out = []
+    for c in cookies:
+        name = str(c or "").split("=", 1)[0].strip()
+        if _COOKIE_NAME_RE.match(name) and name not in out:
+            out.append(name)
+    return out[:12]
 
 
 def _php_session_cookie(headers):
@@ -266,7 +288,7 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
     current = url
     sent_method, sent_data = method, data
     hops, seen, first_status = 0, set(), None
-    status, hdrs, php_cookie = None, {}, False
+    status, hdrs, php_cookie, ck_names = None, {}, False, []
     proto = None
     t0 = time.monotonic()
 
@@ -298,12 +320,14 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
                 status = getattr(resp, "status", None) or resp.getcode()
                 hdrs = {nk: resp.headers.get(hk) for hk, nk in HEADER_MAP.items()}
                 php_cookie = _php_session_cookie(resp.headers)
+                ck_names = _cookie_names(resp.headers)
                 proto = "HTTP/%.1f" % (getattr(resp, "version", 11) / 10.0)
                 _drain(resp, cfg["read_limit"])
         except urllib.error.HTTPError as e:
             status = e.code
             hdrs = {nk: e.headers.get(hk) for hk, nk in HEADER_MAP.items()}
             php_cookie = _php_session_cookie(e.headers)
+            ck_names = _cookie_names(e.headers)
             _drain(e, cfg["read_limit"])
         except urllib.error.URLError as e:
             reason = getattr(e, "reason", None)
@@ -345,6 +369,8 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
     out.update({k: v for k, v in hdrs.items() if v})
     if php_cookie:
         out["php_session_cookie"] = True
+    if ck_names:
+        out["cookie_names"] = ck_names
     return out
 
 
@@ -1501,6 +1527,17 @@ _STATUS_NAMES = {202: "Accepted", 401: "Unauthorized", 403: "Forbidden",
                  530: "Origin DNS Error (CDN)"}
 
 
+# PHP application fingerprints (mirror of the client's PHP_COOKIE_RE /
+# PHP_GENERATOR_RE): Drupal SESS<hex>, CodeIgniter, CakePHP, WordPress,
+# PrestaShop, Moodle cookies; X-Generator of PHP CMSes
+_PHP_COOKIE_RE = re.compile(
+    r"(s?sess[0-9a-f]{32}|ci_session|cakephp|wordpress_[0-9a-f]{32}|"
+    r"wordpress_logged_in_.*|wp-settings-.*|prestashop-[0-9a-f]+|moodlesession.*)$", re.I)
+_PHP_GENERATOR_RE = re.compile(
+    r"\b(drupal|wordpress|joomla|typo3|magento|prestashop|mediawiki|craft cms|"
+    r"concrete5|backdrop)\b", re.I)
+
+
 def _is_php_xpb(v):
     """X-Powered-By names PHP itself (PHP/8.3.4) - not Next.js/Express/KPHP."""
     return bool(re.search(r"(^|[^a-z])php(/|\s|;|,|$)", str(v or ""), re.I))
@@ -1536,6 +1573,14 @@ def _php_signs(facts):
             out.append((k, lab, "X-Powered-By: " + str(p["x_powered_by"])))
         if p.get("php_session_cookie"):
             out.append((k, lab, "PHP session cookie"))
+        for c in p.get("cookie_names") or []:
+            if _PHP_COOKIE_RE.match(c):
+                out.append((k, lab, "PHP app cookie "
+                            + re.sub(r"[0-9a-f]{12,}", "…", c, count=1, flags=re.I)))
+        if _PHP_GENERATOR_RE.search(str(p.get("x_generator") or "")):
+            out.append((k, lab, "X-Generator: " + str(p["x_generator"])))
+        if re.match(r"mw-(web|api)", str(p.get("server") or ""), re.I):
+            out.append((k, lab, "Server: MediaWiki app server"))
     return out
 
 

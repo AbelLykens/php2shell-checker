@@ -135,6 +135,16 @@
     .resrow > .dimlabel { flex-basis: 100%; }
   }
   /* redirect end host after the "→" in the result header: underlined link */
+  #advisorycard summary::-webkit-details-marker { display: none; }
+  #advisorycard .advmore { color: var(--muted); }
+  #advisorycard[open] .advmore { display: none; }
+  /* "if PHP / if not PHP" columns; the likely one is outlined */
+  .dual { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .dual > div { border: 1px solid var(--border); padding: 6px 8px; }
+  .dual > div.likely { border: 2px solid var(--accent); }
+  .dual .dh { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 4px; }
+  .dual .lk { color: var(--accent); text-transform: none; letter-spacing: 0; }
+  @media (max-width: 520px) { .dual { grid-template-columns: 1fr; } }
   .redir a.selflink { text-decoration: underline; text-underline-offset: 2px; }
   /* open-site icon right of the result header */
   a.openlink { color: var(--muted); margin-left: 4px; display: inline-block; vertical-align: -1px; }
@@ -176,6 +186,7 @@
     </div>
     <div class="small mono" id="testdate" hidden style="margin-top:4px"></div>
     <div class="resrow"><span class="dimlabel">verdict</span> <span id="verdict"></span></div>
+    <div class="resrow" id="dualrow" hidden><span class="dimlabel">depends on stack</span> <span id="dual"></span></div>
     <div class="resrow"><span class="dimlabel">PHP detection</span> <span id="dimphp"></span></div>
     <div class="resrow"><span class="dimlabel">vulnerability check</span> <span id="dimblk"></span></div>
     <details id="techcard" hidden>
@@ -192,13 +203,14 @@
     </details>
   </div>
 
-  <div class="card" id="advisorycard">
-    <div class="resrow" style="margin-top:0">
+  <details class="card" id="advisorycard">
+    <summary class="resrow" style="margin-top:0;list-style:none;cursor:pointer">
       <span class="dimlabel">advisory</span>
       <span><span class="chip bad">out now &mdash; update PHP</span>
         <span class="small">php.net, 21&nbsp;Oct&nbsp;2026:
-        <a href="https://www.php.net/archive/2026.php#2026-10-21-5" target="_blank" rel="noopener">Critical remote code execution vulnerabilities, update now</a></span></span>
-    </div>
+        <a href="https://www.php.net/archive/2026.php#2026-10-21-5" target="_blank" rel="noopener">Critical remote code execution vulnerabilities, update now</a>
+        &middot; <span class="advmore">details &#9662;</span></span></span>
+    </summary>
     <div class="small" style="margin-top:8px;line-height:1.6">
       <b>Fixed in PHP 8.5.12, 8.4.27, 8.3.36 and 8.2.35</b>
       (<a href="https://www.php.net/downloads.php?source=Y" target="_blank" rel="noopener">source</a>,
@@ -236,7 +248,7 @@
         </ul>
       </div>
     </details>
-  </div>
+  </details>
 
   <div class="card" id="diycard">
     <details id="diydetails">
@@ -302,7 +314,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.51";
+const BUILD = "2026-10-21.52";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -360,15 +372,55 @@ function siteOf(h) {
   return (tld.length === 2 && /^(co|com|org|net|gov|ac|edu|ne|or)$/.test(sl))
     ? p.slice(-3).join('.') : p.slice(-2).join('.');
 }
-function phpSigns(facts) {
+/* PHP application fingerprints beyond the session cookie: cookie NAMES
+   (Drupal SESS<32 hex>, CodeIgniter, CakePHP, WordPress, PrestaShop,
+   Moodle), X-Generator of PHP CMSes, Wikimedia's PHP app servers */
+const PHP_COOKIE_RE = /^(s?sess[0-9a-f]{32}|ci_session|cakephp|wordpress_[0-9a-f]{32}|wordpress_logged_in_.*|wp-settings-.*|prestashop-[0-9a-f]+|moodlesession.*)$/i;
+const PHP_GENERATOR_RE = /\b(drupal|wordpress|joomla|typo3|magento|prestashop|mediawiki|craft cms|concrete5|backdrop)\b/i;
+/* responses that count for THIS site: not ended on another site after a redirect */
+function ownProbes(facts) {
   const home = siteOf(bareDomain(hostOf(facts.url)));
+  return PROBE_LABELS.map(([k, lab]) => [k, lab, facts[k]]).filter(([k, lab, p]) =>
+    p && !p.error && !p.skipped
+    && !((p.redirects | 0) > 0 && p.final_url && siteOf(bareDomain(hostOf(p.final_url))) !== home));
+}
+function phpSigns(facts) {
   const out = [];
-  for (const [k, lab] of PROBE_LABELS) {
-    const p = facts[k];
-    if (!p || p.error || p.skipped) continue;
-    if ((p.redirects | 0) > 0 && p.final_url && siteOf(bareDomain(hostOf(p.final_url))) !== home) continue;
+  for (const [k, lab, p] of ownProbes(facts)) {
     if (isPhpXpb(p.x_powered_by)) out.push({ key: k, where: lab, what: 'X-Powered-By: ' + p.x_powered_by });
     if (p.php_session_cookie) out.push({ key: k, where: lab, what: 'PHP session cookie' });
+    for (const c of (p.cookie_names || []))
+      if (PHP_COOKIE_RE.test(c)) out.push({ key: k, where: lab, what: 'PHP app cookie ' + c.replace(/[0-9a-f]{12,}/i, '\u2026') });
+    if (PHP_GENERATOR_RE.test(String(p.x_generator || ''))) out.push({ key: k, where: lab, what: 'X-Generator: ' + p.x_generator });
+    if (/^mw-(web|api)/i.test(String(p.server || ''))) out.push({ key: k, where: lab, what: 'Server: MediaWiki app server' });
+  }
+  return out;
+}
+
+/* signs AGAINST PHP: another runtime named by a header or cookie. Only
+   used to highlight the likely column - never to decide a verdict. Front
+   ends (Google ESF, Facebook proxygen, CDNs) say nothing about the app
+   behind them and are not hints; S3 / GitHub Pages / app servers are. */
+const NOT_PHP_XPB = [[/next\.js/i, 'Next.js (Node)'], [/express/i, 'Express (Node)'], [/\bnode\b/i, 'Node.js'],
+  [/asp\.net/i, 'ASP.NET'], [/servlet|jsf|jsp|undertow/i, 'Java'], [/kphp/i, 'KPHP (not the PHP engine)'],
+  [/hhvm/i, 'HHVM (not the PHP engine)'], [/phusion|passenger/i, 'Passenger (Ruby/Node)']];
+const NOT_PHP_SERVER = [[/^kestrel/i, 'ASP.NET (Kestrel)'], [/^(jetty|apache-coyote|tomcat|wildfly)/i, 'Java'],
+  [/^(gunicorn|uvicorn|granian|hypercorn|werkzeug|waitress|daphne)/i, 'Python'], [/^amazons3/i, 'static files (S3)'],
+  [/^cowboy/i, 'Erlang/Elixir'],
+  [/^(github\.com|netlify)/i, 'static hosting']];
+const NOT_PHP_COOKIE = [[/^jsessionid$/i, 'Java'], [/^(asp\.net_sessionid|\.aspnetcore\..*|\.aspxauth|aspxauth)$/i, 'ASP.NET'],
+  [/^connect\.sid$/i, 'Node (Express)'], [/^csrftoken$/i, 'Django (Python)'], [/^rack\.session$/i, 'Ruby (Rack)'],
+  [/^_[a-z0-9_]+_session$/i, 'Ruby on Rails']];
+function notPhpHints(facts) {
+  const out = [];
+  const add = (lab, what, stack) => { if (!out.some(x => x.what === what)) out.push({ where: lab, what, stack }); };
+  for (const [k, lab, p] of ownProbes(facts)) {
+    const x = String(p.x_powered_by || ''), sv = String(p.server || '');
+    if (x && !isPhpXpb(x)) for (const [re, st] of NOT_PHP_XPB) if (re.test(x)) { add(lab, 'X-Powered-By: ' + x, st); break; }
+    for (const [re, st] of NOT_PHP_SERVER) if (re.test(sv)) { add(lab, 'Server: ' + sv, st); break; }
+    if (p.x_aspnet_version) add(lab, 'X-AspNet-Version', 'ASP.NET');
+    for (const c of (p.cookie_names || []))
+      for (const [re, st] of NOT_PHP_COOKIE) if (re.test(c)) { add(lab, 'cookie ' + c, st); break; }
   }
   return out;
 }
@@ -609,7 +661,7 @@ function blockDimension(facts) {
     return { cls: 'info', text: 'rate-limited (429) — try again later' };
   // identical rejection of both content types cannot be told apart remotely
   // from an app-level 403/404, which happens AFTER PHP parsed the body
-  return { cls: 'info', text: 'uploads refused (' + rej + ')',
+  return { cls: 'info', refused: true, text: 'uploads refused (' + rej + ')',
     why: 'can’t tell from outside whether this happened before or after PHP read them — not proof of protection' };
 }
 
@@ -629,6 +681,27 @@ const VERDICT_SHOWN = {
 function shownLabel(l, phpSeen) {
   if (l === 'BLOCKED' && !phpSeen) return 'MITIGATED';
   return VERDICT_SHOWN[l] || l;
+}
+
+/* "if PHP / if not PHP": when the answer hinges only on whether the site
+   runs the PHP engine (no PHP signs, but uploads got through, were stopped,
+   or were refused ambiguously), show both outcomes side by side and
+   highlight the likely one. null = a single verdict says it all. */
+function dualVerdict(facts, v) {
+  if (!v || v.phpSeen || !v.blk || v.php.cls === 'bad') return null;
+  const b = v.blk;
+  let ifPhp;
+  if (b.cls === 'bad' && !b.redirTo) ifPhp = { cls: 'bad', label: 'ASSUMED VULNERABLE', why: 'uploads reach PHP and no patched version is confirmed' };
+  else if (v.label === 'BLOCKED') ifPhp = { cls: 'ok', label: 'MITIGATED \u2014 UPDATE STILL NEEDED', why: 'uploads are stopped before PHP, but PHP itself is unpatched until updated' };
+  else if (b.refused) ifPhp = { cls: 'warn', label: 'INCONCLUSIVE', why: 'can\u2019t tell whether PHP read the refused uploads first' };
+  else return null;
+  const hints = notPhpHints(facts);
+  return {
+    ifPhp,
+    ifNot: { cls: 'ok', label: 'NOT AFFECTED', why: 'the bug is in the PHP engine; other runtimes don\u2019t have it' },
+    likely: hints.length ? 'notphp' : '',
+    hints,
+  };
 }
 
 function interpret(facts) {
@@ -1073,6 +1146,18 @@ function render(f) {
   setFavicon(v.cls);
   document.title = 'php2shell.site \u2014 ' + (shown || 'check');
   $('verdict').innerHTML = chip(v.cls, shownLabel(v.label, v.phpSeen));
+  const dv = dualVerdict(f, v);
+  $('dualrow').hidden = !dv;
+  if (dv) {
+    const col = (head, o, likely) => '<div' + (likely ? ' class="likely"' : '') + '><div class="dh">' + head
+      + (likely ? ' <span class="lk">\u2190 likely</span>' : '') + '</div>' + chip(o.cls, o.label)
+      + '<div class="small" style="color:var(--muted);margin-top:3px">' + esc(o.why) + '</div></div>';
+    $('dual').innerHTML = '<div class="dual">' + col('if this site runs PHP', dv.ifPhp, dv.likely === 'php')
+      + col('if it doesn\u2019t', dv.ifNot, dv.likely === 'notphp') + '</div>'
+      + '<div class="small" style="color:var(--muted);margin-top:4px">' + (dv.hints.length
+        ? 'likely not PHP: ' + esc(dv.hints.map(h => h.what + ' \u2192 ' + h.stack).join('; '))
+        : 'no hint either way \u2014 check which runtime your site uses') + '</div>';
+  }
   $('dimphp').innerHTML = chip(v.php.cls, v.php.text)
     + (v.php.why ? ' <span class="small" style="color:var(--muted)">(' + esc(v.php.why) + ')</span>' : '');
   $('dimblk').innerHTML = v.blk ? chip(v.blk.cls, v.blk.text)
