@@ -263,7 +263,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.33";
+const BUILD = "2026-10-21.34";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -825,7 +825,10 @@ async function postJSON(url, obj, signal) {
 }
 async function getJSON(url, signal) {
   const r = await fetch(url, { signal, cache: 'no-store' });
-  return { status: r.status, data: await r.json() };
+  // non-JSON bodies (nginx 502 page while the service restarts) -> {}
+  let data = {};
+  try { data = await r.json(); } catch (_) {}
+  return { status: r.status, data };
 }
 
 /* ----------------------------------------------------------- proof of work */
@@ -1083,7 +1086,10 @@ async function run(force, urlOverride) {
   timer = setInterval(updateProgText, 250);
 
   try {
-    const pre = takePrewarm();   // background-solved on load: instant submit
+   // jobs live in server memory: a service restart (deploy) mid-check loses
+   // the job -> poll() reports 'lost' and the check is resubmitted (max 2x)
+   for (let attempt = 0; ; attempt++) {
+    const pre = attempt ? null : takePrewarm();   // background-solved on load: instant submit
     let ch, pow;
     if (pre) {
       ch = pre.ch; pow = pre.pow;
@@ -1115,7 +1121,17 @@ async function run(force, urlOverride) {
     lastForce = !!force;
     statusState.phase = 'probing';
     updateProgText();
-    await poll(r.data.job_id, statusState, updateProgText);
+    if (await poll(r.data.job_id, statusState, updateProgText) !== 'lost') break;
+    if (attempt >= 2) {
+      $('progtext').textContent = 'the server restarted during the check \u2014 please press Check again';
+      break;
+    }
+    clearInterval(timer); timer = null;
+    $('progtext').textContent = 'server restarted \u2014 resubmitting\u2026';
+    await sleep(2000);
+    statusState.phase = 'pow'; statusState.startedAt = Date.now();
+    timer = setInterval(updateProgText, 250);
+   }
   } catch (e) {
     if (e.name !== 'AbortError') $('progtext').textContent = 'error: ' + e.message;
   } finally {
@@ -1134,12 +1150,14 @@ async function poll(jobId, statusState, updateProgText) {
   let delay = 1200;
   let finished = false;
   while (true) {
+   let r;
+   try {
     // every poll needs a fresh (cheap) PoW - CPU-throttles polling loops.
     const ch = await getPow('status', controller.signal);
     lastPowBits.poll = ch.bits || 0;
     const pow = await solvePow(ch, controller.signal);
     const qs = pow ? '?pow_id=' + pow.id + '&pow_nonce=' + pow.nonce : '';
-    let r = await getJSON('/api/job/' + jobId + qs, controller.signal);
+    r = await getJSON('/api/job/' + jobId + qs, controller.signal);
     if (r.status === 401 && /pow/i.test(String(r.data && r.data.error || ''))) {
       // status PoW was invalid/expired/used — solve a fresh one and retry once
       const freshCh = await getPow('status', controller.signal);
@@ -1148,6 +1166,12 @@ async function poll(jobId, statusState, updateProgText) {
       const freshQs = freshPow ? '?pow_id=' + freshPow.id + '&pow_nonce=' + freshPow.nonce : '';
       r = await getJSON('/api/job/' + jobId + freshQs, controller.signal);
     }
+   } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    return 'lost';   // service unreachable mid-poll (restarting)
+   }
+    // 404 = job gone (service restarted); 502-504 = nginx while it restarts
+    if (r.status === 404 || (r.status >= 502 && r.status <= 504)) return 'lost';
     if (r.status !== 200) { $('progtext').textContent = 'job unknown or expired'; break; }
     const d = r.data;
     const f = d.results && (d.results[lastUrl] || d.results[d.urls[0]]);
