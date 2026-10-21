@@ -658,8 +658,8 @@ async function getPow(purpose, signal) {
   return r.data;
 }
 
-/* nicer ?url= param: strip scheme + trailing slash, keep : / ? = . - _ literal
-   and show '&' as '~' so the value never splits the query string */
+/* bare ?<target> share form: strip scheme + trailing slash, keep : / ? = . - _
+   literal and show '&' as '~' so the value never splits the query string */
 function niceParam(u) {
   return encodeURIComponent(String(u).replace(/^https?:\/\//i, '').replace(/\/+$/, ''))
     .replace(/%3A/gi, ':').replace(/%2F/gi, '/')
