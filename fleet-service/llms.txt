@@ -21,10 +21,14 @@ defenses against CVE-2026-109618/619 are observable from the outside:
 
 ## Verdicts
 
-- PATCHED (green): a PHP version banner at or above a fixed release.
-- UNPATCHED (red): a PHP version banner below a fixed release.
-- BLOCKED (green): every multipart-family request is rejected by an edge
-  rule (WAF/CDN) before a parser sees it.
+- NOT VULNERABLE (PATCHED) (green): a PHP version banner at or above a
+  fixed release.
+- VULNERABLE (UNPATCHED PHP) (red): a PHP version banner below a fixed
+  release (or an EOL branch: 7.x, 8.0, 8.1).
+- VULNERABLE (red): unpatched PHP banner AND upload-style requests get through.
+- (PROBABLY) NOT VULNERABLE (green), uploads stopped: every multipart-family
+  request is rejected by an edge rule (WAF/CDN/proxy) while plain form posts
+  get through, i.e. before a parser sees it.
 - ASSUMED VULNERABLE (red): multipart requests reach the backend and no
   patched runtime could be confirmed.
 - (PROBABLY) NOT VULNERABLE (green): PHP runs on the site, but POST/PUT/PATCH
@@ -35,6 +39,9 @@ defenses against CVE-2026-109618/619 are observable from the outside:
   zero PHP indicators (no banner, no session cookie) — consistent with a
   static site; nothing to exploit at that URL.
 - OFFLINE (green): the URL refuses connections; nothing is serving.
+- COULD NOT TEST (orange): bot protection / firewall refused every request
+  (GET included) or answered with a challenge (202).
+- UNREACHABLE: no usable answer (timeouts, TLS errors, CDN "origin down").
 - UNKNOWN: anything not covered above (remote probing cannot see everything;
   the checker says so instead of over-claiming).
 

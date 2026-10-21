@@ -111,7 +111,7 @@
   #themebtn { position: fixed; top: 10px; right: 10px; width: 34px; height: 34px;
               padding: 0; font-size: 16px; line-height: 1; z-index: 10;
               background: var(--card); color: var(--fg); }
-  #ghbtn { position: fixed; top: 10px; left: 10px; width: 34px; height: 34px;
+  #ghbtn { position: fixed; top: 52px; right: 10px; width: 34px; height: 34px;   /* below the dark-mode button */
            padding: 0; z-index: 10; display: inline-flex; align-items: center;
            justify-content: center; background: var(--card); color: var(--fg); }
   #ghbtn svg { width: 17px; height: 17px; fill: currentColor; }
@@ -214,7 +214,7 @@
           <strong>How to interpret the output:</strong>
           <ul style="margin:6px 0 0;padding-left:18px;line-height:1.6">
             <li><b>X-Powered-By / Server header</b>: Look for PHP version info (fixed releases: 8.2.35+, 8.3.36+, 8.4.27+, 8.5.12+).</li>
-            <li><b>Multipart 403 / 406 while urlencoded succeeds (200/302/405)</b>: Multipart is blocked by WAF/CDN/web server rule before PHP processes it (<b>BLOCKED</b>).</li>
+            <li><b>Multipart 403 / 406 while urlencoded succeeds (200/302/405)</b>: Multipart is blocked by WAF/CDN/web server rule before PHP processes it (<b>(PROBABLY) NOT VULNERABLE</b>).</li>
             <li><b>Multipart 200 / 3xx</b>: Multipart request body reaches the application (<b>ASSUMED VULNERABLE</b> if unpatched).</li>
             <li><b>All 405 Method Not Allowed</b>: if the 405 responses carry no PHP signs (no PHPSESSID cookie, no X-Powered-By) the server refused before PHP (<b>(PROBABLY) NOT VULNERABLE</b>, or <b>NO PHP DETECTED</b> without any PHP indicators). A 405 that sets a PHP session cookie came from PHP itself, after it read the upload (<b>ASSUMED VULNERABLE</b>).</li>
           </ul>
@@ -264,7 +264,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.43";
+const BUILD = "2026-10-21.44";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -338,7 +338,8 @@ function phpSigns(facts) {
 function signsText(signs) {
   const by = new Map();
   for (const x of signs) { if (!by.has(x.what)) by.set(x.what, []); by.get(x.what).push(x.where); }
-  return Array.from(by, ([what, w]) => what + ' (' + w.join(', ') + ')').join('; ');
+  return Array.from(by, ([what, w]) => what + ' ('
+    + (w.length > 3 ? 'on ' + w.length + ' responses' : w.join(', ')) + ')').join('; ');
 }
 function parsePhp(signs) {
   for (const x of signs) {
@@ -538,7 +539,8 @@ function blockDimension(facts) {
   // multipart rejected wherever we probed it while the plain form got
   // through: a content-type rule fired, likely before PHP parsed the body
   if (isMultipartThrough(ue)) {
-    return { cls: 'ok', text: 'active (multipart rejected on ' + mps.map(([m]) => m).join('+') + ', likely before PHP)' };
+    return { cls: 'ok', text: 'uploads stopped before PHP (multipart refused on ' + mps.map(([m]) => m).join('+') + ')',
+      why: 'plain form posts got through, upload-style posts were refused by a firewall / CDN / server rule' };
   }
   // same contrast with a dead backend: the plain form was FORWARDED (the
   // proxy answered 502/503/504 because the backend failed) while every
@@ -547,7 +549,7 @@ function blockDimension(facts) {
   const fwdFail = s => s >= 502 && s <= 504;
   if (fwdFail(st(ue)) && mps.every(([m, p]) => st(p) === 403 || st(p) === 406)) {
     return { cls: 'ok', backendDown: true,
-      text: 'active (uploads refused by the proxy on ' + mps.map(([m]) => m).join('+') + ', before the backend)',
+      text: 'uploads stopped at the proxy before PHP (' + mps.map(([m]) => m).join('+') + ')',
       why: 'plain form posts were passed on to the backend (it answered ' + sn(st(ue))
         + ' \u2014 the site was down during the test), uploads were refused at the proxy itself; re-check once the site is up' };
   }
@@ -572,6 +574,17 @@ function blockDimension(facts) {
   return { cls: 'info', text: 'uploads refused (' + rej + ')',
     why: 'can’t tell from outside whether this happened before or after PHP read them — not proof of protection' };
 }
+
+/* what the visitor reads: outcome-first wording. Internal labels stay
+   stable (logic, tests and the server mirror key on them). */
+const VERDICT_SHOWN = {
+  'BLOCKED': '(PROBABLY) NOT VULNERABLE',
+  'PATCHED': 'NOT VULNERABLE (PATCHED)',
+  'EXPOSED': 'VULNERABLE',
+  'UNPATCHED': 'VULNERABLE (UNPATCHED PHP)',
+  'TEST BLOCKED': 'COULD NOT TEST',
+};
+function shownLabel(l) { return VERDICT_SHOWN[l] || l; }
 
 function interpret(facts) {
   const php = phpDimension(facts), blk = blockDimension(facts);
@@ -995,7 +1008,7 @@ function render(f) {
   $('resurl').innerHTML = urlHtml + redirHtml + openHtml;
   setFavicon(v.cls);
   document.title = 'php2shell.site \u2014 ' + (shown || 'check');
-  $('verdict').innerHTML = chip(v.cls, v.label);
+  $('verdict').innerHTML = chip(v.cls, shownLabel(v.label));
   $('dimphp').innerHTML = chip(v.php.cls, v.php.text)
     + (v.php.why ? ' <span class="small" style="color:var(--muted)">(' + esc(v.php.why) + ')</span>' : '');
   $('dimblk').innerHTML = v.blk ? chip(v.blk.cls, v.blk.text)
