@@ -51,7 +51,7 @@
     --done-bg: #1c2c40; --done-fg: #8ab8e8; --done-b: #2f4d70;
     --mute-bg: #252d38; --mute-fg: #93a0ad; --mute-b: #39434f;
   }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 70px; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 56px 20px 70px; }   /* top room for the fixed GitHub/theme buttons */
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
   .card { background: var(--card); border: 1px solid var(--border); padding: 16px 18px; margin: 14px 0; }
@@ -94,6 +94,10 @@
   #themebtn { position: fixed; top: 10px; right: 10px; width: 34px; height: 34px;
               padding: 0; font-size: 16px; line-height: 1; z-index: 10;
               background: var(--card); color: var(--fg); }
+  #ghbtn { position: fixed; top: 10px; left: 10px; width: 34px; height: 34px;
+           padding: 0; z-index: 10; display: inline-flex; align-items: center;
+           justify-content: center; background: var(--card); color: var(--fg); }
+  #ghbtn svg { width: 17px; height: 17px; fill: currentColor; }
   .foot { font-size: 12.5px; color: var(--muted); margin-top: 24px; }
   .foot p { margin: 8px 0; }
   details summary { cursor: pointer; color: var(--muted); }
@@ -112,6 +116,9 @@
 <body>
 <button id="themebtn" type="button" title="Toggle dark mode"
         aria-label="Toggle dark mode">&#9789;</button>
+<a id="ghbtn" href="https://github.com/AbelLykens/php2shell-checker"
+   target="_blank" rel="noopener noreferrer" title="Source on GitHub"
+   aria-label="Source code on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
 <div class="wrap">
   <h1><a class="selflink" href="./" title="php2shell check — this page">php2shell check</a></h1>
   <p class="sub">Patch & mitigation status for CVE-2026-109618/619 (PHP
@@ -206,7 +213,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.7";
+const BUILD = "2026-10-21.8";
 
 /* ------------------------------------------------- server-side patched list */
 
