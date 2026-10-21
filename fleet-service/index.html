@@ -250,7 +250,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.21";
+const BUILD = "2026-10-21.22";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -598,7 +598,7 @@ function render(f) {
   // display (targets are bare domains, probes always https). When the probe
   // was redirected onto a DIFFERENT host (cookie walls, mirrors), show it
   // after a "→" as a link to that domain's own check.
-  const shown = noDefaultPort(String(f.url)).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  const shown = noDefaultPort(String(f.url)).replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
   const urlHtml = /^https?:\/\//i.test(f.url)
     ? '<a class="selflink" href="/' + niceParam(f.url)
       + '" title="Link to this check">' + esc(shown) + '</a>'
@@ -739,7 +739,7 @@ function stripUrlParts(u) {
   if (cut !== -1) rest = rest.slice(0, cut);
   rest = rest.replace(/\.+$/, '').trim();
   if (!rest || !/[a-z0-9]/i.test(rest) || /[^a-z0-9.\-:\[\]]/i.test(rest)) return null;
-  return rest;
+  return rest.toLowerCase();
 }
 
 async function getPow(purpose, signal) {
@@ -751,7 +751,7 @@ async function getPow(purpose, signal) {
 /* bare /<target> share form: strip scheme + trailing slash (scan targets
    are bare domains, so nothing else should survive) */
 function niceParam(u) {
-  return encodeURIComponent(String(u).replace(/^https?:\/\//i, '').replace(/\/+$/, ''))
+  return encodeURIComponent(String(u).replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase())
     .replace(/%3A/gi, ':').replace(/%2F/gi, '/')
     .replace(/%3F/gi, '?').replace(/%3D/gi, '=').replace(/%26/gi, '~');
 }
@@ -764,7 +764,7 @@ function hostOf(u) {
 
 /* host minus port: the redir arrow and its share link show the bare domain */
 function bareDomain(h) {
-  h = String(h || '');
+  h = String(h || '').toLowerCase();
   return h.indexOf(':') > -1 && h[0] !== '[' ? h.slice(0, h.indexOf(':')) : h;
 }
 
@@ -862,7 +862,7 @@ async function run(force, urlOverride) {
   }
   const bare = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
   if (clean !== raw) $('url').value = clean;
-  if (bare !== clean) {
+  if (bare.toLowerCase() !== clean) {
     $('progtext').textContent = 'URL path stripped \u2014 only bare domains are scanned; press Check again';
     return;
   }
@@ -1155,16 +1155,21 @@ setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
     try { u = decodeURIComponent(location.hash.slice(1)); } catch (_) { u = ''; }
   }
   if (u) {
-    $('url').value = u;
+    const clean = stripUrlParts(u);
+    $('url').value = clean || u.toLowerCase();
     if (findingKey) {
       // Instant check via finding key (no PoW needed)
-      const clean = stripUrlParts(u);
       if (clean) {
         try {
           const r = await getJSON('/api/finding?domain=' + encodeURIComponent(clean) + '&key=' + encodeURIComponent(findingKey));
           if (r.status === 200 && r.data && r.data.facts) {
             lastUrl = 'https://' + clean;
             render(r.data.facts);
+            const fetchedAt = Number(r.data.facts.fetched_at || 0);
+            const age = Math.floor(Date.now() / 1000 - fetchedAt);
+            if (!fetchedAt || age > 600) {
+              run(true);
+            }
             return;
           }
         } catch (_) {}
