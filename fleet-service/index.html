@@ -263,7 +263,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.35";
+const BUILD = "2026-10-21.37";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -406,10 +406,10 @@ function blockDimension(facts) {
     const ms = andList(redir.map(e => e[0]));
     const dest = bareDomain(hostOf((redir[0][1] || {}).final_url));
     const orig = bareDomain(hostOf(facts.url));
-    if (phpEvidence) return { cls: 'bad',
+    if (phpEvidence) return { cls: 'bad', redirTo: dest || orig,
       text: 'NOT BLOCKED \u2014 test uploads were redirected, not blocked, on ' + ms,
       why: 'PHP reads an upload before the page code runs, so a redirect from a PHP site is no protection \u2014 see Technical info' };
-    return { cls: 'info',
+    return { cls: 'info', redirTo: dest || orig,
       text: 'INCONCLUSIVE \u2014 test uploads were redirected on ' + ms,
       why: 'a redirect is not a block, and the destination was not tested with an upload'
         + (dest && dest !== orig ? ' \u2014 check ' + dest + ' itself' : '') };
@@ -474,6 +474,27 @@ let lastJobId = '';
 let lastForce = false;
 let lastPowBits = { scan: 0, poll: 0 };   // difficulties we solved, shown as tech info
 let running = false;
+
+/* www <-> bare-domain redirect: the probes all land on the other variant, so
+   checking this name tests nothing - move the whole page to the destination
+   and check that instead. wwwFollowed guards against ping-pong. */
+const wwwFollowed = new Set();
+function wwwTwin(f) {
+  const g = (f && f.get) || {};
+  if (!(g.redirects | 0) || !g.final_url) return '';
+  const a = bareDomain(hostOf(f.url)), b = bareDomain(hostOf(g.final_url));
+  if (!a || !b || a === b || wwwFollowed.has(b)) return '';
+  return (a === 'www.' + b || b === 'www.' + a) ? b : '';
+}
+function followWww(to, from) {
+  wwwFollowed.add(from);
+  wwwFollowed.add(to);
+  $('url').value = to;
+  run(false, to).then(() => {
+    if (!$('progtext').textContent)
+      $('progtext').textContent = from + ' redirects to ' + to + ' \u2014 showing ' + to;
+  });
+}
 let controller = null;
 
 const $ = id => document.getElementById(id);
@@ -547,7 +568,7 @@ setInterval(function () { renderTestDate(); renderRecheck(); }, 1000);
 function explainVerdict(f, v) {
   const g = f.get || {};
   const label = v ? v.label : 'UNKNOWN';
-  let summary = '', details = '', advice = '';
+  let summary = '', details = '', advice = '', adviceHtml = '';
 
   switch (label) {
     case 'PATCHED':
@@ -614,7 +635,15 @@ function explainVerdict(f, v) {
 
     case 'UNKNOWN':
     default:
-      if (v && v.blk && v.blk.cls === 'bad' && !g.php_session_cookie && !g.x_powered_by) {
+      if (v && v.blk && v.blk.redirTo) {
+        const to = v.blk.redirTo, other = to !== bareDomain(hostOf(f.url));
+        summary = 'Every upload test was redirected' + (other ? ' to ' + to : '') + ', so the uploads never got there.';
+        details = 'A 301/302/303 redirect makes the client repeat the request as a plain GET without the upload, so '
+          + (other ? to + ' \u2014 the site that actually serves the pages \u2014' : 'the page that actually handles the request')
+          + ' was never tested. A redirect is not a protection: it says nothing about whether the destination is vulnerable.';
+        advice = other ? 'Run the check on the destination: ' : 'Test the exact URL that handles uploads on the host itself.';
+        if (other) adviceHtml = '<a href="/' + niceParam(to) + '">check ' + esc(to) + ' \u2192</a>';
+      } else if (v && v.blk && v.blk.cls === 'bad' && !g.php_session_cookie && !g.x_powered_by) {
         summary = 'Multipart requests are accepted, but no PHP indicators were found.';
         details = 'The server accepts multipart payloads, but provides no PHP version banner or PHP session cookies. The backend may be running Python, Node.js, Go, Java, or PHP with custom headers.';
         advice = 'If this service runs PHP behind a proxy, verify on the host whether PHP is on a patched release.';
@@ -629,7 +658,7 @@ function explainVerdict(f, v) {
   return '<div style="margin-top:10px;padding:10px 12px;background:var(--code);border-left:3px solid var(--accent);border-radius:2px">'
     + '<div style="font-weight:600;font-size:12.5px;color:var(--fg);margin-bottom:4px">Conclusion: ' + esc(summary) + '</div>'
     + '<div class="small" style="line-height:1.5;margin-bottom:4px">' + esc(details) + '</div>'
-    + '<div class="small" style="line-height:1.5"><b style="color:var(--fg)">Actionable advice:</b> ' + esc(advice) + '</div>'
+    + '<div class="small" style="line-height:1.5"><b style="color:var(--fg)">Actionable advice:</b> ' + esc(advice) + adviceHtml + '</div>'
     + '</div>';
 }
 
@@ -648,13 +677,6 @@ function techInfo(f, v) {
       + (lastPowBits.poll ? lastPowBits.poll + '-bit poll' : 'poll off'));
   }
   if (f.fetched_at) meta.push('tested ' + utcText(f.fetched_at) + ' (' + agoText(f.fetched_at) + ')');
-  const redirProbe = (f.get && (f.get.redirects | 0) > 0 && f.get.final_url) ? f.get
-    : (f.post_urlencoded && (f.post_urlencoded.redirects | 0) > 0 && f.post_urlencoded.final_url) ? f.post_urlencoded
-    : (f.post_multipart && (f.post_multipart.redirects | 0) > 0 && f.post_multipart.final_url) ? f.post_multipart
-    : null;
-  if (redirProbe && redirProbe.final_url && redirProbe.final_url !== f.url) {
-    meta.push('final endpoint <b class="mono">' + esc(noDefaultPort(redirProbe.final_url)) + '</b> (' + (redirProbe.redirects | 0) + ' redirect' + (redirProbe.redirects > 1 ? 's' : '') + ')');
-  }
   meta.push('build ' + BUILD);
   if (bad) meta.push('<span class="pill pill-bad">red</span> = the response this red verdict is based on');
 
@@ -698,18 +720,32 @@ function techInfo(f, v) {
     return '<span class="pill pill-' + statusClass(finalSt, evidence) + '">'
       + esc(String(finalSt) + (STATUS_NAMES[finalSt] ? ' ' + STATUS_NAMES[finalSt] : '')) + '</span>';
   };
+  /* response column header names the END domain the responses came from
+     (after redirects; same probe priority as the result header: GET, then
+     the POST probes) — "→" marks a redirect onto a different host */
+  const endP = [f.get, f.post_urlencoded, f.post_multipart]
+    .find(p => p && (p.redirects | 0) > 0 && p.final_url) || g;
+  const endDom = bareDomain(hostOf(endP.final_url || f.url));
+  const origDom = bareDomain(hostOf(f.url));
   const row = (label, sent, p, evidence) => {
     if (!p) return;
     const bits = [];
     if (p.error) bits.push(p.error);
     else if (!p.skipped) {
       if (p.redirects) bits.push('+' + p.redirects + ' redirect' + (p.redirects > 1 ? 's' : ''));
+      // 301/302/303 on a body request: the client re-requests with GET and
+      // drops the body - the destination never received the upload
+      const fs = p.first_status !== undefined ? p.first_status : p.status;
+      if (label !== 'GET' && p.redirects && [301, 302, 303].includes(fs))
+        bits.push('followed as GET, body not re-sent');
     }
     if (p.skipped && p.baseline_error) bits.push('baseline: ' + p.baseline_error);
     if (p.proto) bits.push(p.proto);
     if (p.ms !== undefined) bits.push(p.ms + ' ms');
     let fin = '';
-    if (p.redirects && p.final_url) fin = '<div class="small" style="margin-top:2px;color:var(--muted)">endpoint: ' + esc(noDefaultPort(p.final_url)) + '</div>';
+    // only when this request ended somewhere else than the column header says
+    const rowDom = p.redirects && p.final_url ? bareDomain(hostOf(p.final_url)) : '';
+    if (rowDom && rowDom !== endDom) fin = '<div class="small" style="margin-top:2px;color:var(--muted)">ended at ' + esc(rowDom) + '</div>';
     rows.push('<tr><td><b>' + label + '</b></td><td class="small">' + sent
       + '</td><td class="mono">' + responsePills(p, evidence) + (bits.length ? ' ' + esc(bits.join(' · ')) : '') + fin + '</td></tr>');
   };
@@ -726,13 +762,6 @@ function techInfo(f, v) {
           f[m + '_multipart'], blkBad && reached(f[m + '_multipart']));
     }
   }
-  /* response column header names the END domain the responses came from
-     (after redirects; same probe priority as the result header: GET, then
-     the POST probes) — "→" marks a redirect onto a different host */
-  const endP = [f.get, f.post_urlencoded, f.post_multipart]
-    .find(p => p && (p.redirects | 0) > 0 && p.final_url) || g;
-  const endDom = bareDomain(hostOf(endP.final_url || f.url));
-  const origDom = bareDomain(hostOf(f.url));
   const respHead = 'response' + (endDom ? ' <span class="mono" style="font-weight:400">'
     + (origDom && endDom !== origDom ? '\u2192 ' : '') + esc(endDom) + '</span>' : '');
   const hdrs = [];
@@ -1164,6 +1193,8 @@ async function run(force, urlOverride) {
     $('bar').hidden = true;   // done (or failed): no dangling progress bar
     $('go').disabled = false;
     renderRecheck();
+    const twin = wwwTwin(lastFacts);
+    if (twin) { followWww(twin, bareDomain(hostOf(lastFacts.url))); return; }
     setTimeout(prewarmPow, 1500);   // re-arm for the next check
   }
 }
@@ -1386,6 +1417,8 @@ setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
             // re-probe - the Re-check button unlocks 3 min after the test
             lastUrl = 'https://' + clean;
             render(r.data.facts);
+            const twin = wwwTwin(r.data.facts);
+            if (twin) followWww(twin, clean);
             return;
           }
         } catch (_) {}
