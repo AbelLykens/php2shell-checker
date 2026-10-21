@@ -1764,8 +1764,12 @@ _VERDICT_SHOWN = {"BLOCKED": "MITIGATED — UPDATE STILL NEEDED",
                   "TEST BLOCKED": "COULD NOT TEST", "UNKNOWN": "INCONCLUSIVE"}
 
 
-def shown_label(label):
-    """Visitor-facing verdict wording (mirror of the client's VERDICT_SHOWN)."""
+def shown_label(label, php_seen=True):
+    """Visitor-facing verdict wording (mirror of the client's shownLabel):
+    "update still needed" presumes PHP, so an upload block on a site with no
+    PHP signs reads just "MITIGATED"."""
+    if label == "BLOCKED" and not php_seen:
+        return "MITIGATED"
     return _VERDICT_SHOWN.get(label, label)
 
 
@@ -1785,7 +1789,7 @@ def finding_summary(facts, releases):
     findings, e.g. 'ASSUMED VULNERABLE — NOT BLOCKED — test uploads were
     accepted on POST · PHP detected — version hidden'."""
     label, _cls, php, blk = _verdict_preview(facts, releases)
-    bits = [shown_label(label)]
+    bits = [shown_label(label, bool(_php_signs(facts)))]
     if blk:
         bits.append(blk["text"])
     line = " — ".join(bits) + " · " + php["text"]
@@ -1943,7 +1947,8 @@ def og_png(facts, releases, via=None):
                     y += 30
                 return y + 14
 
-            y = section(y, "VERDICT", shown_label(label), cls, f_verdict, None)
+            y = section(y, "VERDICT", shown_label(label, bool(_php_signs(facts))), cls,
+                        f_verdict, None)
             y = section(y, "PHP detection", php["text"], php["cls"], f_chip,
                         php.get("why"))
             btxt = blk["text"] if blk else "not tested"

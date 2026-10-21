@@ -302,7 +302,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.49";
+const BUILD = "2026-10-21.50";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -624,7 +624,12 @@ const VERDICT_SHOWN = {
   'TEST BLOCKED': 'COULD NOT TEST',
   'UNKNOWN': 'INCONCLUSIVE',
 };
-function shownLabel(l) { return VERDICT_SHOWN[l] || l; }
+/* "update still needed" presumes PHP: an upload block on a site with no
+   PHP signs reads just "MITIGATED" */
+function shownLabel(l, phpSeen) {
+  if (l === 'BLOCKED' && !phpSeen) return 'MITIGATED';
+  return VERDICT_SHOWN[l] || l;
+}
 
 function interpret(facts) {
   const php = phpDimension(facts), blk = blockDimension(facts);
@@ -654,7 +659,7 @@ function interpret(facts) {
   else if (php.cls === 'ok') { cls = 'ok'; label = 'PATCHED'; }
   // shown as orange INCONCLUSIVE: the check could not decide either way
   if (label === 'UNKNOWN') cls = 'warn';
-  return { cls, label, php, blk };
+  return { cls, label, php, blk, phpSeen };
 }
 
 /* --------------------------------------------------------------------- state */
@@ -780,9 +785,11 @@ function explainVerdict(f, v) {
       break;
 
     case 'BLOCKED':
-      summary = 'Mitigated: upload-style requests are stopped by a firewall / CDN / proxy before they reach PHP \u2014 PHP itself still needs the update.';
+      summary = 'Mitigated: upload-style requests are stopped by a firewall / CDN / proxy before they reach PHP'
+        + (v.phpSeen ? ' \u2014 PHP itself still needs the update.' : ' (no PHP signs seen on this site).');
       details = 'Plain form posts got through, but multipart/form-data uploads were refused (e.g. 403). That blocks the confirmed upload-progress attack path. Per php.net, mitigations reduce exposure but do not make PHP safe: CVE-2026-109618 can also be reached through other request parsing (plain form bodies, field counts), and CVE-2026-109619 through other paths than upload progress.';
-      advice = 'Update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package). Keep the WAF/CDN rule meanwhile and make sure the origin is not reachable directly, bypassing it.';
+      advice = (v.phpSeen ? '' : 'If this site does run PHP: ')
+        + 'update to PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or your vendor\u2019s patched package). Keep the WAF/CDN rule meanwhile and make sure the origin is not reachable directly, bypassing it.';
       break;
 
     case 'EXPOSED':
@@ -1062,7 +1069,7 @@ function render(f) {
     : urlHtml + redirHtml + openHtml;
   setFavicon(v.cls);
   document.title = 'php2shell.site \u2014 ' + (shown || 'check');
-  $('verdict').innerHTML = chip(v.cls, shownLabel(v.label));
+  $('verdict').innerHTML = chip(v.cls, shownLabel(v.label, v.phpSeen));
   $('dimphp').innerHTML = chip(v.php.cls, v.php.text)
     + (v.php.why ? ' <span class="small" style="color:var(--muted)">(' + esc(v.php.why) + ')</span>' : '');
   $('dimblk').innerHTML = v.blk ? chip(v.blk.cls, v.blk.text)
