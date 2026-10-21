@@ -302,7 +302,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.50";
+const BUILD = "2026-10-21.51";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -681,10 +681,13 @@ const followed = new Set();
 let followVia = null;
 function redirectDest(f) {
   const g = (f && f.get) || {};
-  if (!(g.redirects | 0) || !g.final_url || !(g.status >= 200 && g.status < 300)) return '';
+  if (!(g.redirects | 0) || !g.final_url) return '';
   const a = bareDomain(hostOf(f.url)), b = bareDomain(hostOf(g.final_url));
   if (!a || !b || a === b || followed.has(b)) return '';
-  return b;
+  // www <-> bare is the same site: always follow (even onto a bot wall);
+  // any other host only when it serves a real page (not a consent/login error)
+  if (a === 'www.' + b || b === 'www.' + a) return b;
+  return (g.status >= 200 && g.status < 300) ? b : '';
 }
 function followRedirect(to, from) {
   followed.add(from);

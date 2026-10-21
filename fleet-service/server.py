@@ -1777,11 +1777,14 @@ def redirect_dest(facts):
     """Mirror of the client's redirectDest: the homepage GET redirected to
     ANOTHER host that served a real page (2xx) -> that host, else None."""
     g = (facts or {}).get("get") or {}
-    if not (g.get("redirects") or 0) or not g.get("final_url") \
-            or not 200 <= (g.get("status") or 0) < 300:
+    if not (g.get("redirects") or 0) or not g.get("final_url"):
         return None
     a, b = _host_of(facts.get("url")), _host_of(g.get("final_url"))
-    return b if a and b and a != b else None
+    if not a or not b or a == b:
+        return None
+    if a == "www." + b or b == "www." + a:   # same site: always
+        return b
+    return b if 200 <= (g.get("status") or 0) < 300 else None
 
 
 def finding_summary(facts, releases):
