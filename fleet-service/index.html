@@ -69,6 +69,7 @@
      gray = no response (error/skipped) */
   .pill { display: inline-block; min-width: 34px; text-align: center; padding: 0 5px;
           font-size: 11px; font-weight: 700; border: 1px solid; white-space: nowrap; }
+  .pill .why { font-weight: 400; opacity: .85; }
   .pill-done  { background: var(--done-bg); color: var(--done-fg); border-color: var(--done-b); }
   .pill-block { background: var(--ok-bg);   color: var(--ok-fg);   border-color: var(--ok-b); }
   .pill-err   { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-b); }
@@ -263,7 +264,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.40";
+const BUILD = "2026-10-21.41";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -336,6 +337,53 @@ const STATUS_NAMES = {
   500: 'Internal Server Error', 501: 'Not Implemented', 502: 'Bad Gateway',
   503: 'Service Unavailable', 504: 'Gateway Timeout', 505: 'HTTP Version Not Supported',
 };
+
+/* plain-language meaning of each status code, shown inside the response
+   pills (short) and as their tooltip (long): what it tells us about the
+   request in THIS test. Unknown codes fall back to their class. */
+const STATUS_EXPLAIN = {
+  200: ['accepted', 'The server accepted the request and answered normally.'],
+  201: ['accepted, something created', 'The server accepted the request and created something.'],
+  204: ['accepted, empty answer', 'The server accepted the request and sent no body back.'],
+  206: ['partial answer', 'The server sent only part of the content.'],
+  301: ['moved for good \u2014 redirect', 'Permanent redirect. A browser repeats the request at the new address, as a plain GET without the body.'],
+  302: ['redirect elsewhere', 'Temporary redirect. A browser repeats the request at the new address, as a plain GET without the body.'],
+  303: ['redirect, fetch with GET', 'Redirect that explicitly asks for a GET at the new address; the body is dropped.'],
+  304: ['cached copy still valid', 'Nothing changed since the cached copy.'],
+  307: ['redirect, body re-sent', 'Temporary redirect that keeps the method and body: the upload is sent again to the new address.'],
+  308: ['moved for good, body re-sent', 'Permanent redirect that keeps the method and body: the upload is sent again to the new address.'],
+  400: ['rejected as malformed', 'The server refused the request as badly formed.'],
+  401: ['login required', 'The server wants authentication first.'],
+  403: ['refused (often a firewall)', 'Forbidden. Often a WAF/CDN rule; could also be the application itself.'],
+  404: ['no such page', 'Nothing lives at this address.'],
+  405: ['this method is refused here', 'Method Not Allowed: this URL does not accept this HTTP method (e.g. POST). Who said it matters: the web server/edge (before PHP) or PHP itself (after it read the body).'],
+  406: ['refused (often a WAF rule)', 'Not Acceptable. Commonly returned by WAF rules such as mod_security.'],
+  408: ['server stopped waiting', 'The server gave up waiting for the request.'],
+  409: ['conflict', 'The request conflicts with the current state of the resource.'],
+  410: ['removed for good', 'The resource is gone permanently.'],
+  411: ['needs a length', 'The server requires a Content-Length header.'],
+  413: ['body too large', 'The request body was larger than the server allows.'],
+  414: ['address too long', 'The URL was longer than the server allows.'],
+  415: ['this body type is refused', 'Unsupported Media Type: the server refuses this Content-Type (e.g. multipart/form-data).'],
+  422: ['understood but rejected', 'The server parsed the request but rejected its content.'],
+  429: ['too many requests', 'Rate-limited: slow down and try later.'],
+  431: ['headers too large', 'The request headers were larger than the server allows.'],
+  451: ['blocked for legal reasons', 'Unavailable for legal reasons.'],
+  500: ['server error', 'The server failed while handling the request.'],
+  501: ['method not supported at all', 'Not Implemented: the server does not support this method anywhere.'],
+  502: ['bad answer from backend', 'Bad Gateway: a proxy got an invalid answer from the server behind it.'],
+  503: ['unavailable / overloaded', 'Service Unavailable: overloaded, in maintenance or down.'],
+  504: ['backend timed out', 'Gateway Timeout: the server behind the proxy did not answer in time.'],
+  505: ['HTTP version refused', 'The server does not support this HTTP version.'],
+};
+function statusExplain(s) {
+  if (STATUS_EXPLAIN[s]) return STATUS_EXPLAIN[s];
+  if (s >= 200 && s < 300) return ['success', 'A success answer (2xx).'];
+  if (s >= 300 && s < 400) return ['redirect', 'A redirect (3xx) to another address.'];
+  if (s >= 400 && s < 500) return ['refused', 'The server refused the request (4xx).'];
+  if (s >= 500) return ['server error', 'The server failed (5xx).'];
+  return ['', ''];
+}
 
 function blockDimension(facts) {
   if (facts.level !== 'block') return null;
@@ -703,25 +751,30 @@ function techInfo(f, v) {
     if (s >= 500) return 'err';
     return 'mute';
   };
+  // one pill: "405 Method Not Allowed · this method is refused here",
+  // long explanation as tooltip
+  const stPill = (st, cls, extraTitle) => {
+    const ex = statusExplain(st);
+    return '<span class="pill pill-' + cls + '" title="' + esc((extraTitle ? extraTitle + ' \u2014 ' : '') + ex[1]) + '">'
+      + esc(String(st) + (STATUS_NAMES[st] ? ' ' + STATUS_NAMES[st] : ''))
+      + (ex[0] ? '<span class="why"> \u00b7 ' + esc(ex[0]) + '</span>' : '') + '</span>';
+  };
   const responsePills = (p, evidence) => {
     if (!p) return '—';
-    if (p.error) return '<span class="pill pill-mute">ERR</span>';
-    if (p.skipped) return '<span class="pill pill-mute">SKIP</span>';
+    if (p.error) return '<span class="pill pill-mute" title="No HTTP answer: network, DNS or TLS error.">ERR<span class="why"> \u00b7 no answer</span></span>';
+    if (p.skipped) return '<span class="pill pill-mute" title="Not sent: the plain-form baseline for this method already failed at connection level.">SKIP<span class="why"> \u00b7 not sent</span></span>';
 
     const first = p.first_status !== undefined ? p.first_status : p.status;
     const finalSt = p.status !== undefined ? p.status : first;
 
     if (first !== undefined && finalSt !== undefined && first !== finalSt) {
       // Chain of pills: [301] (neutral redirect) -> [200] (endpoint response, colored if evidence)
-      const firstPill = '<span class="pill pill-done">'
-        + esc(String(first) + (STATUS_NAMES[first] ? ' ' + STATUS_NAMES[first] : '')) + '</span>';
-      const finalPill = '<span class="pill pill-' + statusClass(finalSt, evidence) + '" title="Actual endpoint response">'
-        + esc(String(finalSt) + (STATUS_NAMES[finalSt] ? ' ' + STATUS_NAMES[finalSt] : '')) + '</span>';
+      const firstPill = stPill(first, 'done', 'First answer');
+      const finalPill = stPill(finalSt, statusClass(finalSt, evidence), 'Answer at the end of the redirect');
       return firstPill + ' <span style="color:var(--muted);font-weight:600">→</span> ' + finalPill;
     }
 
-    return '<span class="pill pill-' + statusClass(finalSt, evidence) + '">'
-      + esc(String(finalSt) + (STATUS_NAMES[finalSt] ? ' ' + STATUS_NAMES[finalSt] : '')) + '</span>';
+    return stPill(finalSt, statusClass(finalSt, evidence));
   };
   /* response column header names the END domain the responses came from
      (after redirects; same probe priority as the result header: GET, then
@@ -743,6 +796,9 @@ function techInfo(f, v) {
         bits.push('followed as GET, body not re-sent');
     }
     if (p.skipped && p.baseline_error) bits.push('baseline: ' + p.baseline_error);
+    // PHP signs on THIS response (who answered: PHP or something before it)
+    if (p.php_session_cookie) bits.push('sets PHP session cookie');
+    if (p.x_powered_by && label !== 'GET') bits.push('X-Powered-By: ' + p.x_powered_by);
     if (p.proto) bits.push(p.proto);
     if (p.ms !== undefined) bits.push(p.ms + ' ms');
     let fin = '';
