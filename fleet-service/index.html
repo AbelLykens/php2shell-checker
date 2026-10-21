@@ -263,7 +263,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.31";
+const BUILD = "2026-10-21.33";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -916,7 +916,12 @@ function stripUrlParts(u) {
 }
 
 async function getPow(purpose, signal) {
-  const r = await getJSON('/api/pow?for=' + purpose, signal);
+  // &domain= is a log tag only (server ignores it; nginx logs show which
+  // target a challenge was for): polls tag the running check, scans the box
+  let d = '';
+  try { d = purpose === 'status' && lastUrl ? hostOf(lastUrl) : stripUrlParts($('url').value || ''); } catch (_) {}
+  const r = await getJSON('/api/pow?for=' + purpose
+    + (d ? '&domain=' + encodeURIComponent(d) : ''), signal);
   if (r.status !== 200) throw new Error((r.data && r.data.error) || 'PoW challenge failed');
   return r.data;
 }
@@ -1331,13 +1336,10 @@ setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
         try {
           const r = await getJSON('/api/finding?domain=' + encodeURIComponent(clean) + '&key=' + encodeURIComponent(findingKey));
           if (r.status === 200 && r.data && r.data.facts) {
+            // show the stored result as-is, whatever its age: no automatic
+            // re-probe - the Re-check button unlocks 3 min after the test
             lastUrl = 'https://' + clean;
             render(r.data.facts);
-            const fetchedAt = Number(r.data.facts.fetched_at || 0);
-            const age = Math.floor(Date.now() / 1000 - fetchedAt);
-            if (!fetchedAt || age > 600) {
-              run(true);
-            }
             return;
           }
         } catch (_) {}
