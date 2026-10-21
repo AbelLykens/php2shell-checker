@@ -170,13 +170,6 @@
         <div class="small mono" id="resdetails" style="margin-top:6px"></div>
       </details>
       <div id="tech" style="margin-top:10px"></div>
-      <details id="diycard" style="margin-top:8px">
-        <summary class="small">reproduce via curl (bash script)</summary>
-        <div style="margin-top:6px">
-          <button id="copycurl" type="button" class="btn small" style="margin-bottom:6px;padding:2px 8px;font-size:12px;cursor:pointer">Copy script</button>
-          <pre id="curlscript" class="mono small" style="overflow-x:auto;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;user-select:all"></pre>
-        </div>
-      </details>
       <details style="margin-top:8px">
         <summary class="small">raw JSON (exactly as returned by the server)</summary>
         <pre id="raw"></pre>
@@ -191,6 +184,29 @@
     </div>
     <div class="small" style="margin-top:6px">Patched-release list (fixed PHP versions) is
     published at 14:00&nbsp;UTC on 21&nbsp;Oct&nbsp;2026. Countdown runs in your browser.</div>
+  </div>
+
+  <div class="card" id="diycard">
+    <details id="diydetails">
+      <summary style="font-weight:600;color:var(--fg);cursor:pointer">DIY: Run the curl test script yourself</summary>
+      <div style="margin-top:12px">
+        <p class="small" style="margin:0 0 10px">Want to run the exact same inert checks yourself directly from your terminal or CI? Below is the curl test script representing the 7 requests (1 GET + urlencoded &amp; multipart across POST, PUT, and PATCH). It never sends upload-progress fields or file parts, so it is safe to run on authorized targets.</p>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px">
+          <span class="small dimlabel">Bash / curl script</span>
+          <button type="button" id="copycurl" style="padding:3px 10px;font-size:12px">Copy script</button>
+        </div>
+        <pre id="curlscript" style="margin:0;font-size:12px;line-height:1.45"></pre>
+        <div class="small" style="margin-top:10px">
+          <strong>How to interpret the output:</strong>
+          <ul style="margin:6px 0 0;padding-left:18px;line-height:1.6">
+            <li><b>X-Powered-By / Server header</b>: Look for PHP version info (fixed releases: 8.2.35+, 8.3.36+, 8.4.27+, 8.5.12+).</li>
+            <li><b>Multipart 403 / 406 while urlencoded succeeds (200/302/405)</b>: Multipart is blocked by WAF/CDN/web server rule before PHP processes it (<b>BLOCKED</b>).</li>
+            <li><b>Multipart 200 / 3xx</b>: Multipart request body reaches the application (<b>ASSUMED VULNERABLE</b> if unpatched).</li>
+            <li><b>All 405 Method Not Allowed</b>: Route rejects body payloads entirely (<b>NO PHP DETECTED</b> if no PHP indicators).</li>
+          </ul>
+        </div>
+      </div>
+    </details>
   </div>
 
   <div class="foot">
@@ -234,7 +250,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.20";
+const BUILD = "2026-10-21.21";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -369,9 +385,16 @@ function interpret(facts) {
   else if (php.cls === 'bad' && blk && blk.cls === 'bad') { cls = 'bad'; label = 'EXPOSED'; }
   else if (php.cls === 'bad') { cls = 'bad'; label = 'UNPATCHED'; }
   else if (blk && blk.cls === 'ok') { cls = 'ok'; label = 'BLOCKED'; }
-  // multipart-family requests flow through and no patched runtime could be
-  // confirmed -> assume vulnerable until a patched PHP version is verified
-  else if (blk && blk.cls === 'bad') { cls = 'bad'; label = 'ASSUMED VULNERABLE'; }
+  // multipart-family requests flow through: if confirmed PHP indicators exist,
+  // assume vulnerable until a patched PHP version is verified; without PHP indicators,
+  // report unknown (less confident)
+  else if (blk && blk.cls === 'bad') {
+    if (g.php_session_cookie || g.x_powered_by) {
+      cls = 'bad'; label = 'ASSUMED VULNERABLE';
+    } else {
+      cls = 'info'; label = 'UNKNOWN';
+    }
+  }
   // nothing POST-shaped is processed here AND zero PHP indicators anywhere
   // (no banner, no session cookie): nothing to exploit at this URL
   else if (blk && blk.static && php.cls === 'info'

@@ -322,9 +322,13 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
             current, hops = nxt, hops + 1
             continue
         break
-    out = {"status": status, "first_status": first_status,
-           "final_url": current, "redirects": hops,
-           "ms": int((time.monotonic() - t0) * 1000)}
+    out = {
+        "status": status,
+        "first_status": first_status,
+        "final_url": current,
+        "redirects": hops,
+        "ms": int((time.monotonic() - t0) * 1000),
+    }
     if proto:
         out["proto"] = proto
     out.update({k: v for k, v in hdrs.items() if v})
@@ -1509,7 +1513,9 @@ def _verdict_preview(facts, releases):
     if blk and blk["cls"] == "ok":
         return "BLOCKED", "ok", php, blk
     if blk and blk["cls"] == "bad":
-        return "ASSUMED VULNERABLE", "bad", php, blk
+        if g.get("php_session_cookie") or g.get("x_powered_by"):
+            return "ASSUMED VULNERABLE", "bad", php, blk
+        return "UNKNOWN", "info", php, blk
     if (blk and blk.get("static") and php["cls"] == "info"
             and not g.get("php_session_cookie") and not g.get("x_powered_by")):
         return "NO PHP DETECTED", "ok", php, blk
