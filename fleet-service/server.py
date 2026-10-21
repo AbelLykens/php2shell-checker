@@ -1656,6 +1656,12 @@ def _blk_preview(facts):
     if is_through(ue):
         return {"cls": "ok", "text": "active (multipart rejected on "
                 + "+".join(m for m, _ in mps) + ", likely before PHP)"}
+    # dead backend contrast: plain form forwarded (502-504) while every
+    # upload got a deliberate 403/406 from the proxy itself
+    if 502 <= st(ue) <= 504 and all(st(p) in (403, 406) for _, p in mps):
+        return {"cls": "ok", "backend_down": True,
+                "text": "active (uploads refused by the proxy on "
+                        + "+".join(m for m, _ in mps) + ", before the backend)"}
     if all(520 <= st(p) <= 530 for _, p in mps):
         return {"cls": "info", "unreach": True,
                 "text": "origin server down behind the CDN (%s)"

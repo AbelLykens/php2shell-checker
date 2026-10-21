@@ -264,7 +264,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.42";
+const BUILD = "2026-10-21.43";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -539,6 +539,17 @@ function blockDimension(facts) {
   // through: a content-type rule fired, likely before PHP parsed the body
   if (isMultipartThrough(ue)) {
     return { cls: 'ok', text: 'active (multipart rejected on ' + mps.map(([m]) => m).join('+') + ', likely before PHP)' };
+  }
+  // same contrast with a dead backend: the plain form was FORWARDED (the
+  // proxy answered 502/503/504 because the backend failed) while every
+  // upload got a deliberate 403/406 - the proxy refused those itself,
+  // without forwarding them, so before PHP
+  const fwdFail = s => s >= 502 && s <= 504;
+  if (fwdFail(st(ue)) && mps.every(([m, p]) => st(p) === 403 || st(p) === 406)) {
+    return { cls: 'ok', backendDown: true,
+      text: 'active (uploads refused by the proxy on ' + mps.map(([m]) => m).join('+') + ', before the backend)',
+      why: 'plain form posts were passed on to the backend (it answered ' + sn(st(ue))
+        + ' \u2014 the site was down during the test), uploads were refused at the proxy itself; re-check once the site is up' };
   }
   // CDN "origin down" (Cloudflare 520-530): the site itself never answered
   const cdnDown = s => s >= 520 && s <= 530;
