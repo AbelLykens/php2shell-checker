@@ -1488,12 +1488,17 @@ def og_png(facts, releases):
             url = _og_text_fit(d, str(facts.get("url") or ""), f_url, mx)
             d.text((80, 120), url, font=f_url, fill=_OG_C["fg"])
             # redirect end-domain, same "url -> endhost" line the live header
-            # shows when the probe followed redirects onto another host
-            g0 = facts.get("get") or {}
-            end_h = _host_of(g0.get("final_url"))
+            # shows when the probe followed redirects onto another host.
+            # Prefer GET's redirect, fall back to POST probes if GET didn't redirect.
+            redir_p = next(
+                (p for p in (facts.get("get"), facts.get("post_urlencoded"),
+                             facts.get("post_multipart"))
+                 if p and (p.get("redirects") or 0) > 0 and p.get("final_url")),
+                facts.get("get") or {})
+            end_h = _host_of(redir_p.get("final_url"))
             orig_h = _host_of(facts.get("url"))
             redir = end_h and orig_h and end_h != orig_h \
-                and (g0.get("redirects") or 0) > 0
+                and (redir_p.get("redirects") or 0) > 0
             label, cls, php, blk = _verdict_preview(facts, releases)
             chip_max = mx - 30   # text width cap: chip padding + border stay inside the card
             if redir:

@@ -566,14 +566,19 @@ function render(f) {
     : esc(f.url);
   let redirHtml = '';
   try {
-    const g0 = f.get || {};
+    // Find the redirect destination: prefer GET's final_url, but if GET didn't
+    // redirect (e.g. edge-blocked) fall back to the POST probe which followed it
+    const redirProbe = (f.get && (f.get.redirects | 0) > 0 && f.get.final_url) ? f.get
+      : (f.post_urlencoded && (f.post_urlencoded.redirects | 0) > 0 && f.post_urlencoded.final_url) ? f.post_urlencoded
+      : (f.post_multipart && (f.post_multipart.redirects | 0) > 0 && f.post_multipart.final_url) ? f.post_multipart
+      : (f.get || {});
     // strip to the bare domain: display, share link and the different-host
     // test are all port-insensitive (share links are bare domains)
-    const endHost = bareDomain(hostOf(g0.final_url));
+    const endHost = bareDomain(hostOf(redirProbe.final_url));
     const origHost = bareDomain(hostOf(f.url));
-    if (endHost && origHost && endHost !== origHost && (g0.redirects | 0) > 0) {
+    if (endHost && origHost && endHost !== origHost && (redirProbe.redirects | 0) > 0) {
       redirHtml = ' <span class="redir">→ <a class="selflink" href="/'
-        + niceParam(endHost) + '" title="redirected ' + (g0.redirects | 0)
+        + niceParam(endHost) + '" title="redirected ' + (redirProbe.redirects | 0)
         + '× — check the destination domain">' + esc(endHost) + '</a></span>';
     }
   } catch (_) {}
@@ -931,7 +936,7 @@ $('themebtn').addEventListener('click', () => {
 $('buildline').textContent = 'build ' + BUILD;
 $('go').addEventListener('click', () => run(false));
 $('url').addEventListener('keydown', e => { if (e.key === 'Enter') run(false); });
-$('recheck').addEventListener('click', () => run(true, lastUrl));
+$('url').addEventListener('input', () => renderRecheck());
 loadReleases();
 setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
 
