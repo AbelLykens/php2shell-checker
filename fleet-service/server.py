@@ -121,6 +121,8 @@ DEFAULTS = dict(
     rate_per_minute=30,      # job submissions per client IP per minute
     queue_limit=2000,        # max queued items; submissions beyond -> 503
     allow_private=False,     # NEVER enable in production: permits private/loopback targets
+    allow_http=False,        # NEVER enable in production: tests only - http targets
+                             # are probed as https otherwise (always-https rule)
     allowlist_file=None,     # optional file of allowed host suffixes, one per line
     verify_tls=True,
     user_agent="php2shell-fleet-check/1.0 (authorized inventory check)",
@@ -226,7 +228,7 @@ def _allowed_host(host, allowlist):
 
 
 def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None,
-               allowlist=None, capture_set_cookie=False):
+               allowlist=None):
     """One request with browser-like redirect following.
 
     Up to max_redirects hops, each hop SSRF-guarded. 301/302/303 convert
@@ -234,16 +236,12 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
     Returns raw facts: final status, first-hop status (what the edge did to
     the ORIGINAL request - verdicts use this, so a later app-level 403 on a
     redirected GET can never fake an "edge block"), redirect count, final
-    URL, and the header snapshot of the last hop. With capture_set_cookie,
-    the raw Set-Cookie headers are kept too (first hop preferred - that is
-    where a session-id adoption would show; final hop as fallback),
-    truncated to keep facts small."""
+    URL, and the header snapshot of the last hop."""
     current = url
     sent_method, sent_data = method, data
     hops, seen, first_status = 0, set(), None
     status, hdrs, php_cookie = None, {}, False
     proto = None
-    sc_first, sc_last = None, None
     t0 = time.monotonic()
 
     def _err(msg):
@@ -254,9 +252,6 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
             d["first_status"] = first_status
         if status is not None:
             d["status"] = status
-        sc = sc_first or sc_last
-        if capture_set_cookie and sc:
-            d["set_cookie"] = sc[:300]
         return d
 
     while True:
@@ -277,23 +272,11 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
                 hdrs = {nk: resp.headers.get(hk) for hk, nk in HEADER_MAP.items()}
                 php_cookie = _php_session_cookie(resp.headers)
                 proto = "HTTP/%.1f" % (getattr(resp, "version", 11) / 10.0)
-                if capture_set_cookie:
-                    _sc = resp.headers.get_all("Set-Cookie")
-                    if _sc:
-                        sc_last = "; ".join(_sc)
-                        if sc_first is None:
-                            sc_first = sc_last
                 _drain(resp, cfg["read_limit"])
         except urllib.error.HTTPError as e:
             status = e.code
             hdrs = {nk: e.headers.get(hk) for hk, nk in HEADER_MAP.items()}
             php_cookie = _php_session_cookie(e.headers)
-            if capture_set_cookie:
-                _sc = e.headers.get_all("Set-Cookie")
-                if _sc:
-                    sc_last = "; ".join(_sc)
-                    if sc_first is None:
-                        sc_first = sc_last
             _drain(e, cfg["read_limit"])
         except urllib.error.URLError as e:
             reason = getattr(e, "reason", None)
@@ -322,9 +305,6 @@ def http_probe(url, method="GET", data=None, headers=None, follow=True, cfg=None
            "ms": int((time.monotonic() - t0) * 1000)}
     if proto:
         out["proto"] = proto
-    sc = sc_first or sc_last
-    if capture_set_cookie and sc:
-        out["set_cookie"] = sc[:300]
     out.update({k: v for k, v in hdrs.items() if v})
     if php_cookie:
         out["php_session_cookie"] = True
@@ -341,40 +321,16 @@ def multipart_probe_body():
     return body, {"Content-Type": "multipart/form-data; boundary=%s" % BOUNDARY}
 
 
-def _fixation_sid():
-    """Random 26-char session id (PHP's charset) for the fixation probe."""
-    import secrets
-    abc = "abcdefghijklmnopqrstuvwxyz0123456789"
-    return "".join(secrets.choice(abc) for _ in range(26))
-
-
-def fixation_probe_body(sid):
-    """CVE-2026-109618 fixation PROBE (inert): a plain multipart form whose
-    FIRST field carries a random session id - exactly the shape the rfc1867
-    handler accepts via MULTIPART_EVENT_FORMDATA. Crucially it has NO
-    PHP_SESSION_UPLOAD_PROGRESS field and NO file part, so no upload-progress
-    state is ever created and the vulnerable code path is not engaged. If the
-    site's response adopts our sid (Set-Cookie), it behaves like an unpatched
-    PHP runtime - remotely observable, nothing exploit-shaped was sent."""
-    body = (
-        "--%s\r\n"
-        "Content-Disposition: form-data; name=\"PHPSESSID\"\r\n\r\n"
-        "%s\r\n"
-        "--%s\r\n"
-        "Content-Disposition: form-data; name=\"probe\"\r\n\r\n"
-        "php2shell-fixation-test\r\n"
-        "--%s--\r\n" % (BOUNDARY, sid, BOUNDARY, BOUNDARY)
-    ).encode("ascii")
-    return body, {"Content-Type": "multipart/form-data; boundary=%s" % BOUNDARY}
-
-
-def sanitize_target(u):
+def sanitize_target(u, allow_http=False):
     """Strict sanity for one scan target. Returns (clean_url, None) or
     (None, reason). Deliberately conservative - this is the front door for
     requests WE send, so anything odd is refused before a job is created:
 
     - absolute http(s) URL only (bare hosts get https:// prepended)
-    - NO query parameters, NO fragment, NO path traversal (../ or ..\\)
+    - ALWAYS HTTPS: an http:// target is probed as https:// instead
+      (allow_http=True only exists for the local test-suite mock origins)
+    - BARE DOMAINS/SUBDOMAINS ONLY: no path content (anything beyond "/"),
+      no query parameters, no fragment, no path traversal (../ or ..\\)
     - no whitespace/control characters, no backslashes, no userinfo
     - host must be a dotted DNS name or an IP literal (single-label names
       like `localhost` are refused - they only ever point inwards)
@@ -393,13 +349,15 @@ def sanitize_target(u):
     if re.search(r"(^|/)\.\.(/|$)", u):
         return None, "path traversal (..) not allowed"
     if "?" in u:
-        return None, "query parameters not allowed - scan the bare path"
+        return None, "query parameters not allowed - scan the bare domain"
     if "#" in u:
         return None, "fragments (#) are never sent - submit the URL without it"
     if not re.match(r"^[a-z][a-z0-9+.\-]*://", u, re.I):
         u = "https://" + u
     if not re.match(r"^https?://", u, re.I):
         return None, "only http(s) URLs are scanned"
+    if re.match(r"^http://", u, re.I) and not allow_http:
+        u = "https://" + u[7:]   # always probe https
     try:
         sp = urllib.parse.urlsplit(u)
         sp.port   # validates the port
@@ -420,6 +378,9 @@ def sanitize_target(u):
                 re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", l, re.I)
                 for l in host.split(".")):
             return None, "malformed host name"
+    if sp.path not in ("", "/"):
+        return None, ("only bare domains/subdomains are scanned - "
+                      "strip the path")
     clean = urllib.parse.urlunsplit(
         (sp.scheme.lower(), netloc.lower(), sp.path or "", "", ""))
     return clean, None
@@ -450,24 +411,6 @@ def probe_url(url, level, cfg, allowlist):
                 url, method, mp_body, mp_headers, cfg=cfg, allowlist=allowlist
             )
             keys.append(name)
-        # CVE-2026-109618 fixation probe (inert): one more multipart POST whose
-        # first field carries a random session id. No upload-progress field, no
-        # file part - only the app's session-id handling is observed (does
-        # Set-Cookie adopt OUR sid?). Skipped outright when the POST baseline
-        # already died at connection level: nothing else can work either.
-        if "error" in facts["post_urlencoded"]:
-            facts["post_fixation"] = {
-                "skipped": "baseline failed",
-                "baseline_error": facts["post_urlencoded"].get("error"),
-            }
-        else:
-            sid = _fixation_sid()
-            fx_body, fx_headers = fixation_probe_body(sid)
-            fx = http_probe(url, "POST", fx_body, fx_headers, cfg=cfg,
-                            allowlist=allowlist, capture_set_cookie=True)
-            fx["sid"] = sid
-            fx["sid_echo"] = bool(sid in (fx.get("set_cookie") or ""))
-            facts["post_fixation"] = fx
         # connection-level failure on the POST baseline -> nothing else can
         # work either; mark instead of asking again. Keep the baseline's error
         # so the UI can show WHY the probes were skipped.
@@ -1175,11 +1118,6 @@ def _verdict_preview(facts, releases):
         return "NO PHP DETECTED", "ok", php, blk
     if php["cls"] == "ok":
         return "PATCHED", "ok", php, blk
-    # fixation accepted with no version banner in play (client branch order:
-    # version verdicts win first)
-    fix = _fix_preview(facts)
-    if fix and fix["cls"] == "bad":
-        return "ASSUMED VULNERABLE", "bad", php, blk
     return "UNKNOWN", "info", php, blk
 
 
@@ -1239,28 +1177,6 @@ def _norm_target(raw):
     return u
 
 
-def _fix_preview(facts):
-    """Mirror of the client's sessionDimension."""
-    if facts.get("level") != "block":
-        return None
-    p = facts.get("post_fixation")
-    if not p:
-        return None
-    if p.get("skipped"):
-        return {"cls": "info", "text": "skipped (POST baseline failed)"}
-    if "error" in p:
-        return {"cls": "info", "text": "probe error (%s)" % p["error"]}
-    if p.get("sid_echo"):
-        return {"cls": "bad",
-                "text": "accepted — our session id came back in "
-                        "Set-Cookie (CVE-2026-109618 precondition)"}
-    s = p.get("first_status", p.get("status")) or 0
-    if 200 <= s < 400:
-        return {"cls": "ok", "text": "not adopted (session id ignored)"}
-    return {"cls": "info",
-            "text": "not observed (rejected %s)" % (s or "connection")}
-
-
 def og_png(facts, releases):
     """Render the dark-mode result card as a PNG. facts=None -> 'not tested'."""
     if _HAVE_PIL:
@@ -1285,31 +1201,16 @@ def og_png(facts, releases):
             url = _og_text_fit(d, str(facts.get("url") or ""), f_url, mx)
             d.text((80, 120), url, font=f_url, fill=_OG_C["fg"])
             label, cls, php, blk = _verdict_preview(facts, releases)
-            fix = _fix_preview(facts)
             chip_max = mx - 30   # text width cap: chip padding + border stay inside the card
-            if fix and fix["cls"] == "bad":
-                # four rows: squeeze spacing, block chip to one line
-                d.text((80, 200), "VERDICT", font=f_lab, fill=_OG_C["muted"])
-                _og_chip(d, 80, 226, label, _OG_C[cls], f_verdict, chip_max)
-                d.text((80, 292), "PHP banner", font=f_lab, fill=_OG_C["muted"])
-                _og_chip(d, 80, 318, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
-                d.text((80, 376), "block test", font=f_lab, fill=_OG_C["muted"])
-                btxt = blk["text"] if blk else "not tested"
-                _og_chip(d, 80, 402, btxt, _OG_C[blk["cls"] if blk else "info"], f_chip,
-                         chip_max, max_lines=1)
-                d.text((80, 460), "session fixation", font=f_lab, fill=_OG_C["muted"])
-                _og_chip(d, 80, 486, fix["text"], _OG_C[fix["cls"]], f_chip, chip_max)
-                foot = OG_H - 70
-            else:
-                d.text((80, 214), "VERDICT", font=f_lab, fill=_OG_C["muted"])
-                _og_chip(d, 80, 244, label, _OG_C[cls], f_verdict, chip_max)
-                d.text((80, 322), "PHP banner", font=f_lab, fill=_OG_C["muted"])
-                _og_chip(d, 80, 350, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
-                d.text((80, 422), "block test", font=f_lab, fill=_OG_C["muted"])
-                btxt = blk["text"] if blk else "not tested"
-                _og_chip(d, 80, 450, btxt, _OG_C[blk["cls"] if blk else "info"], f_chip,
-                         chip_max, max_lines=2)
-                foot = OG_H - 92
+            d.text((80, 214), "VERDICT", font=f_lab, fill=_OG_C["muted"])
+            _og_chip(d, 80, 244, label, _OG_C[cls], f_verdict, chip_max)
+            d.text((80, 322), "PHP banner", font=f_lab, fill=_OG_C["muted"])
+            _og_chip(d, 80, 350, php["text"], _OG_C[php["cls"]], f_chip, chip_max)
+            d.text((80, 422), "block test", font=f_lab, fill=_OG_C["muted"])
+            btxt = blk["text"] if blk else "not tested"
+            _og_chip(d, 80, 450, btxt, _OG_C[blk["cls"] if blk else "info"], f_chip,
+                     chip_max, max_lines=2)
+            foot = OG_H - 92
             fa = facts.get("fetched_at")
             when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(fa)) if fa else "?"
             d.text((80, foot), "tested %s · patch & mitigation status for CVE-2026-109618/619"
@@ -1402,24 +1303,12 @@ class Handler(BaseHTTPRequestHandler):
         # link previews (WhatsApp/Slack/Twitter/...) do not run JS and ignore
         # fragments - inject OG meta only when a target is present. The image
         # is the server-rendered dark-mode card for that URL's stored result.
-        # Share format: the query string after "?" IS the target URL
-        # (e.g. /?example.com/a). Legacy ?url=<u> shares get a permanent 301 to
-        # the bare form; /api/og keeps its documented url= parameter.
-        raw_q = urllib.parse.urlsplit(self.path).query
-        if raw_q.startswith("url=") and len(raw_q) > 4:
-            legacy = _norm_target(urllib.parse.unquote(
-                raw_q[4:].replace("~", "&")))
-            if legacy:
-                nice = re.sub(r"^https?://", "", legacy, flags=re.I).rstrip("/")
-                loc = "/?" + urllib.parse.quote(nice, safe="/:._~-")
-                self.send_response(301)
-                self.send_header("Location", loc)
-                self.send_header("Content-Length", "0")
-                self.send_header("Cache-Control", "public, max-age=86400")
-                self.end_headers()
-                return
-        elif raw_q:
-            u = _norm_target(raw_q)
+        # Share format: the path after "/" IS the target URL (e.g.
+        # /example.com). Legacy query-form shares (?url=<u> and ?<u>) get a
+        # permanent 301 to the path form; /api/og keeps its url= parameter.
+        sp = urllib.parse.urlsplit(self.path)
+        if sp.path not in ("", "/"):
+            u = _norm_target(sp.path.lstrip("/"))
             if u:
                 host = (self.headers.get("Host") or "").strip() or "p2s.cheeserobot.org"
                 meta = (
@@ -1434,6 +1323,23 @@ class Handler(BaseHTTPRequestHandler):
                 ) % (html.escape(u, quote=True), html.escape(host, quote=True),
                      urllib.parse.quote(u, safe=""))
                 page = page.replace("</head>", meta + "\n</head>", 1)
+        elif sp.query:
+            # legacy query-form shares: 301 to the /<target> path form
+            if sp.query.startswith("url=") and len(sp.query) > 4:
+                legacy = urllib.parse.unquote(
+                    sp.query[4:].replace("~", "&")).strip()
+            else:
+                legacy = urllib.parse.unquote(sp.query.replace("~", "&")).strip()
+            norm = _norm_target(legacy) if legacy else None
+            if norm:
+                nice = re.sub(r"^https?://", "", norm, flags=re.I).rstrip("/")
+                loc = "/" + urllib.parse.quote(nice, safe="/:._~-")
+                self.send_response(301)
+                self.send_header("Location", loc)
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                return
         body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1519,7 +1425,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(snap)
             if path == "/llms.txt":
                 return self._llms()
-            if path in ("/", "/index.html"):
+            if not path.startswith("/api/"):
+                # "/" and /<target> share paths all serve the UI page
                 return self._static()
             return self._json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -1553,8 +1460,9 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(urls_in, list) or not urls_in:
                 return self._json({"error": "urls must be a non-empty list"}, 422)
             urls = []
+            allow_http = bool(self.state.cfg.get("allow_http"))
             for u in urls_in:
-                cu, err = sanitize_target(u)
+                cu, err = sanitize_target(u, allow_http=allow_http)
                 if err:
                     return self._json(
                         {"error": "rejected %s: %s" % (str(u)[:200], err)}, 422)

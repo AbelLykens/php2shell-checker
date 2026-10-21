@@ -8,7 +8,7 @@ a PHP `session.upload_progress` use-after-free). Live instance:
 
 | Path | What it is |
 |---|---|
-| `fleet-service/server.py` | The checker backend: stdlib-only Python service. Probes any URL you submit with **eight inert requests** and reports which defenses against the CVE are observable: version banner vs the patched list (8.2.35 / 8.3.36 / 8.4.27 / 8.5.12), multipart reachability on POST/PUT/PATCH, and a session-fixation probe (a random `PHPSESSID` **form field** — never an upload-progress field, never a file part, so the vulnerable code path is never engaged). PoW-gated, one URL at a time, results cached and shared between visitors. |
+| `fleet-service/server.py` | The checker backend: stdlib-only Python service. Probes any URL you submit with **seven inert requests** (never an upload-progress field, never a file part, so the vulnerable code path is never engaged) and reports which defenses against the CVE are observable: version banner vs the patched list (8.2.35 / 8.3.36 / 8.4.27 / 8.5.12), multipart reachability on POST/PUT/PATCH. Targets are bare domains/subdomains, always probed over https. PoW-gated, one URL at a time, results cached and shared between visitors. |
 | `fleet-service/index.html` | The single-page browser UI. |
 | `fleet-service/llms.txt` | Verdicts, honest limits, and the JSON API — also served at `/llms.txt`. |
 

@@ -147,7 +147,6 @@
     <div class="resrow"><span class="dimlabel">verdict</span> <span id="verdict"></span></div>
     <div class="resrow"><span class="dimlabel">PHP banner</span> <span id="dimphp"></span></div>
     <div class="resrow"><span class="dimlabel">block test</span> <span id="dimblk"></span></div>
-    <div class="resrow"><span class="dimlabel">session fixation</span> <span id="dimfix"></span></div>
     <details id="techcard" hidden>
       <summary>Technical info</summary>
       <details id="sumcard" style="margin-top:10px">
@@ -183,10 +182,9 @@
     DETECTED</b> means no POST-shaped request is processed at this URL (connections dropped
     or 405/501 replies) and there are no PHP indicators (banner, session cookie) — consistent
     with a static site: nothing to exploit <i>at this URL</i>.</p>
-    <p><strong>Probes.</strong> One URL at a time, eight inert requests (1 GET, then a normal +
-    multipart request per method, plus a session-fixation probe that sends a random session id
-    as a plain form field — never an upload-progress field, never a file part, so the vulnerable
-    code path is never engaged). Redirects are followed like a browser (301/302/303 convert
+    <p><strong>Probes.</strong> One URL at a time, seven inert requests (1 GET, then a normal +
+    multipart request per method — never an upload-progress field, never a file part, so the
+    vulnerable code path is never engaged). Redirects are followed like a browser (301/302/303 convert
     to GET, 307/308 keep the method, max 3 hops) — the <i>first-hop</i> status decides the
     verdict. A rejection at the CDN/WAF stops the request before PHP parses the body; the exact
     same status produced inside the application happens <i>after</i> — and the two cannot be
@@ -196,7 +194,7 @@
     <p><strong>Scope.</strong> This is a patch-status / configuration check, not a vulnerability
     probe: it never sends exploit-shaped requests (no session cookie, no file part, no
     upload-progress field, no stalling). Results live only in your browser session — there is no
-    export endpoint; the tested URL stays in the address bar as <code>?&hellip;</code> for
+    export endpoint; the tested URL stays in the address bar as <code>/&hellip;</code> for
     bookmarking/sharing and is never sent anywhere. Every submission and every poll
     solves a small proof-of-work in your browser (an abuse brake, ~1s once per check).
     Definitive fix = a patched PHP runtime.</p>
@@ -213,7 +211,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.10";
+const BUILD = "2026-10-21.11";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -328,28 +326,8 @@ function blockDimension(facts) {
   return { cls: 'info', text: 'all rejected (' + rej + ') — edge vs app-level indistinguishable remotely' };
 }
 
-/* session-fixation probe (CVE-2026-109618 chain A, step 1 — inert): we sent a
-   random session id as a plain multipart form field. No upload-progress field,
-   no file part, so the vulnerable code path is never engaged; only the app's
-   session-id handling is observed. If OUR sid comes back in Set-Cookie, the
-   app adopts attacker-chosen session ids — the precondition the PoC chains
-   build on (session injection leading to upload-progress pivoting). */
-function sessionDimension(facts) {
-  if (facts.level !== 'block') return null;
-  const p = facts.post_fixation;
-  if (!p) return null;
-  if (p.skipped) return { cls: 'info', text: 'skipped (POST baseline failed)' };
-  if (p.error) return { cls: 'info', text: 'probe error (' + p.error + ')' };
-  if (p.sid_echo) return { cls: 'bad',
-    text: 'accepted — our session id came back in Set-Cookie (CVE-2026-109618 precondition)' };
-  const s = p.first_status !== undefined ? p.first_status : p.status;
-  if (s >= 200 && s < 400) return { cls: 'ok', text: 'not adopted (session id ignored)' };
-  return { cls: 'info', text: 'not observed (rejected ' + (s || 'connection') + ')' };
-}
-
 function interpret(facts) {
   const php = phpDimension(facts), blk = blockDimension(facts);
-  const fix = sessionDimension(facts);
   let cls = 'info', label = 'UNKNOWN';
   const g = facts.get || {};
   const ue = facts.post_urlencoded || {};
@@ -368,11 +346,7 @@ function interpret(facts) {
   else if (blk && blk.static && php.cls === 'info'
            && !g.php_session_cookie && !g.x_powered_by) { cls = 'ok'; label = 'NO PHP DETECTED'; }
   else if (php.cls === 'ok') { cls = 'ok'; label = 'PATCHED'; }
-  // fixation accepted with no version banner in play: attacker-chosen session
-  // ids are adopted - the precondition CVE-2026-109618 chains build on.
-  // A version banner (UNPATCHED/PATCHED) still wins over this signal.
-  else if (fix && fix.cls === 'bad') { cls = 'bad'; label = 'ASSUMED VULNERABLE'; }
-  return { cls, label, php, blk, fix };
+  return { cls, label, php, blk };
 }
 
 /* --------------------------------------------------------------------- state */
@@ -488,7 +462,6 @@ function techInfo(f) {
       row(lab + ' baseline', 'form-urlencoded · field <code>probe</code>', f[m + '_urlencoded']);
       row(lab + ' multipart', 'multipart/form-data · 1 text field', f[m + '_multipart']);
     }
-    row('POST fixation', 'multipart · PHPSESSID + probe fields (no file part)', f.post_fixation);
   }
   const hdrs = [];
   if (g.server) hdrs.push('Server: ' + esc(g.server));
@@ -520,7 +493,6 @@ function detailsText(f) {
       if (f[k + '_multipart'] || f[k + '_urlencoded'])
         bits.push(lab + '-x ' + stText(f[k + '_urlencoded']) + ', ' + lab + '-m ' + stText(f[k + '_multipart']));
     }
-    if (f.post_fixation) bits.push('fixation ' + (f.post_fixation.sid_echo ? 'SID adopted' : stText(f.post_fixation)));
   }
   if (g.server) bits.push('Server: ' + g.server);
   if (g.x_powered_by) bits.push('X-Powered-By: ' + g.x_powered_by);
@@ -534,17 +506,31 @@ function render(f) {
   lastFacts = f;
   $('rescard').hidden = false;
   const v = interpret(f);
-  // header: plain black anchor pointing back at THIS check (the #url hash) —
-  // not an outbound link to the scanned site
+  // header: plain black anchor pointing back at THIS check (the /<url> path) —
+  // not an outbound link to the scanned site. Scheme is stripped from the
+  // display (targets are bare domains, probes always https). When the probe
+  // was redirected onto a DIFFERENT host (cookie walls, mirrors), show it
+  // after a "→" as a link to that domain's own check.
+  const shown = String(f.url).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
   const urlHtml = /^https?:\/\//i.test(f.url)
-    ? '<a class="selflink" href="?' + niceParam(f.url)
-      + '" title="Link to this check">' + esc(f.url) + '</a>'
+    ? '<a class="selflink" href="/' + niceParam(f.url)
+      + '" title="Link to this check">' + esc(shown) + '</a>'
     : esc(f.url);
-  $('resurl').innerHTML = urlHtml;
+  let redirHtml = '';
+  try {
+    const g0 = f.get || {};
+    const endHost = hostOf(g0.final_url);
+    const origHost = hostOf(f.url);
+    if (endHost && origHost && endHost !== origHost && (g0.redirects | 0) > 0) {
+      redirHtml = ' <span class="redir">→ <a class="selflink" href="/'
+        + niceParam(endHost) + '" title="redirected ' + (g0.redirects | 0)
+        + '× — check the destination domain">' + esc(endHost) + '</a></span>';
+    }
+  } catch (_) {}
+  $('resurl').innerHTML = urlHtml + redirHtml;
   $('verdict').innerHTML = chip(v.cls, v.label);
   $('dimphp').innerHTML = chip(v.php.cls, v.php.text);
   $('dimblk').innerHTML = v.blk ? chip(v.blk.cls, v.blk.text) : '<span class="small">not tested</span>';
-  $('dimfix').innerHTML = v.fix ? chip(v.fix.cls, v.fix.text) : '<span class="small">not tested</span>';
   $('resdetails').innerHTML = detailsText(f);
   renderTestDate();
   renderRecheck();
@@ -642,14 +628,21 @@ function leadZeroBits(hex) {
   return bits;
 }
 
-/* scan-target sanity (mirrors the server's sanitize_target): query parameters
-   and fragments are cut off, path traversal (../) and backslashes are rejected
-   outright. Scanning is param-free and path-exact. Returns the cleaned URL,
-   or null when the input must be rejected. */
+/* scan-target sanity (mirrors the server): only bare domains/subdomains are
+   scanned. The scheme (http/https) is dropped here - the probe always runs
+   against https. Any path, query or fragment is cut off; garbage hosts
+   (traversal, backslashes) are rejected outright. Returns the bare domain,
+   or null to re-enter. */
 function stripUrlParts(u) {
   if (u.indexOf('\\') !== -1) return null;
-  if (/(^|\/)\.\.(\/|$|\?|#)/.test(u)) return null;
-  return u.replace(/[?#][\s\S]*$/, '');
+  let rest = String(u);
+  const m = /^https?:\/\//i.exec(rest);
+  if (m) rest = rest.slice(m[0].length);
+  const cut = rest.search(/[/?#]/);
+  if (cut !== -1) rest = rest.slice(0, cut);
+  rest = rest.replace(/\.+$/, '').trim();
+  if (!rest || !/[a-z0-9]/i.test(rest) || /[^a-z0-9.\-:\[\]]/i.test(rest)) return null;
+  return rest;
 }
 
 async function getPow(purpose, signal) {
@@ -658,12 +651,18 @@ async function getPow(purpose, signal) {
   return r.data;
 }
 
-/* bare ?<target> share form: strip scheme + trailing slash, keep : / ? = . - _
-   literal and show '&' as '~' so the value never splits the query string */
+/* bare /<target> share form: strip scheme + trailing slash (scan targets
+   are bare domains, so nothing else should survive) */
 function niceParam(u) {
   return encodeURIComponent(String(u).replace(/^https?:\/\//i, '').replace(/\/+$/, ''))
     .replace(/%3A/gi, ':').replace(/%2F/gi, '/')
     .replace(/%3F/gi, '?').replace(/%3D/gi, '=').replace(/%26/gi, '~');
+}
+
+/* hostname (with port, lowercased) of an absolute http(s) URL, or '' */
+function hostOf(u) {
+  const m = /^https?:\/\/([^\/?#]+)/i.exec(String(u || ''));
+  return m ? m[1].toLowerCase() : '';
 }
 
 /* pre-warm: fetch + solve the scan PoW in the background so the first Check
@@ -724,28 +723,30 @@ async function run(force, urlOverride) {
   if (running) return;
   const raw = String(urlOverride || $('url').value).trim();
   if (!raw) { $('progtext').textContent = 'enter a URL first'; return; }
-  // sanity gate (the server rejects these too): parameters/fragments are
-  // stripped and put back into the box - the check only runs after the
-  // user submits the CLEANED address on purpose. Traversal is refused.
+  // local rewrite (mirrors the server): whatever was typed collapses to the
+  // bare domain in the box. Scheme (http/https) and trailing slashes drop
+  // silently - the probe ALWAYS runs against https. A path, query or fragment
+  // is stripped too, but that CHANGES the target, so the check only runs
+  // after the user submits the cleaned bare domain on purpose. Garbage hosts
+  // (traversal, backslashes) are refused outright.
   const clean = stripUrlParts(raw);
   if (clean === null) {
-    $('progtext').textContent = 'path traversal (../) is not allowed';
+    $('progtext').textContent = 'enter a domain like example.com (paths and parameters are not scanned)';
     return;
   }
-  if (clean !== raw) {
-    $('url').value = clean;
-    $('progtext').textContent = 'URL parameters stripped \u2014 check the cleaned address and press Check again';
+  const bare = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  if (clean !== raw) $('url').value = clean;
+  if (bare !== clean) {
+    $('progtext').textContent = 'URL path stripped \u2014 only bare domains are scanned; press Check again';
     return;
   }
-  let url = raw;
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = 'https://' + url;
-  if (!/^https?:\/\//i.test(url)) { $('progtext').textContent = 'http/https URLs only'; return; }
+  const url = 'https://' + clean;   // always https, whatever was typed
   lastUrl = url;
-  // shareable state: the query string after "?" IS the checked URL (scheme
-  // and trailing slash stripped, '&' shown as '~'). pushState = no reload on
-  // Enter; back button walks previous checks. The URL is still only in the
-  // address bar, never sent anywhere by this page itself.
-  try { history.pushState(null, '', '?' + niceParam(url)); }
+  // shareable state: the path after "/" IS the checked URL (scheme and
+  // trailing slash stripped). pushState = no reload on Enter; back button
+  // walks previous checks. The URL is still only in the address bar, never
+  // sent anywhere by this page itself.
+  try { history.pushState(null, '', '/' + niceParam(url)); }
   catch (_) { try { location.hash = '#' + encodeURIComponent(url); } catch (_e) {} }
   running = true;
   controller = new AbortController();
@@ -850,20 +851,33 @@ $('recheck').addEventListener('click', () => run(true, lastUrl));
 loadReleases();
 setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
 
-// shareable results: open with ?<url> (legacy ?url=<url> links are rewritten
-// in place; old #<url> hash links still work) to pre-fill and run
+// shareable results: open with /<domain> (the path after "/" IS the target).
+// Legacy query-form shares (?url=<u> and ?<u>) are rewritten in place to the
+// path form; old #<u> hash links still work.
 (function fromParam() {
   let u = '';
-  const s = String(location.search || '');
-  const m = /[?&]url=([^&]*)/.exec(s);
-  if (m) {
-    // legacy ?url= share: rewrite the address bar to the bare ?<url> form
-    try { u = decodeURIComponent(m[1].replace(/~/g, '%26')).trim(); } catch (_) { u = ''; }
-    if (u) {
-      try { history.replaceState(null, '', '?' + niceParam(u)); } catch (_) {}
+  const p = String(location.pathname || '/');
+  if (p.length > 1) {
+    // new share format: /<target> (path, optionally + "?query" re-attached)
+    try { u = decodeURIComponent(p.slice(1)).trim(); } catch (_) { u = ''; }
+    const q = String(location.search || '');
+    if (u && q.length > 1) {
+      try { u += '?' + decodeURIComponent(q.slice(1).replace(/~/g, '%26')); } catch (_e) {}
     }
-  } else if (s.length > 1) {
-    try { u = decodeURIComponent(s.slice(1).replace(/~/g, '%26')).trim(); } catch (_) { u = ''; }
+  } else {
+    const s = String(location.search || '');
+    const m = /[?&]url=([^&]*)/.exec(s);
+    let raw = '';
+    if (m) {
+      try { raw = decodeURIComponent(m[1].replace(/~/g, '%26')).trim(); } catch (_) { raw = ''; }
+    } else if (s.length > 1) {
+      try { raw = decodeURIComponent(s.slice(1).replace(/~/g, '%26')).trim(); } catch (_) { raw = ''; }
+    }
+    if (raw) {
+      // legacy query-form share: rewrite the address bar to /<target>
+      try { history.replaceState(null, '', '/' + encodeURIComponent(niceParam(raw))); } catch (_) {}
+      u = raw;
+    }
   }
   if (!u && location.hash) {
     try { u = decodeURIComponent(location.hash.slice(1)); } catch (_) { u = ''; }

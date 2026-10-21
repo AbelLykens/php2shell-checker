@@ -2,9 +2,11 @@
 
 Public checker for the patch & mitigation status of CVE-2026-109618 / CVE-2026-109619
 (PHP `session.upload_progress` use-after-free; "php2shell"). One URL at a time,
-submitted at `/?<host>` (the query string after `?` is the target, e.g.
-`/?example.com/a`) or through the JSON API below. Legacy `/?url=<host>` links
-redirect permanently to the bare form.
+submitted at `/<host>` (the path after `/` is the target, e.g.
+`/example.com`) or through the JSON API below. Only bare domains/subdomains
+are scanned — any path/query/fragment on the target is stripped, and the
+probe always runs against https (an http target is probed as https). Legacy
+`/?url=<host>` and `/?<host>` query-form links redirect permanently to `/<host>`.
 
 ## What it does
 
@@ -16,9 +18,6 @@ defenses against CVE-2026-109618/619 are observable from the outside:
 - a multipart reachability test across POST/PUT/PATCH (urlencoded baseline +
   one text-field multipart per method — no file part, no upload-progress
   field, nothing exploit-shaped, never stalling),
-- a session-fixation probe: one multipart POST whose first field is a random
-  session id; if the response Set-Cookie adopts OUR id, the app accepts
-  attacker-chosen session ids — the precondition the CVE chains build on.
 
 ## Verdicts
 
@@ -27,7 +26,7 @@ defenses against CVE-2026-109618/619 are observable from the outside:
 - BLOCKED (green): every multipart-family request is rejected by an edge
   rule (WAF/CDN) before a parser sees it.
 - ASSUMED VULNERABLE (red): multipart requests reach the backend and no
-  patched runtime could be confirmed — or the fixation probe was adopted.
+  patched runtime could be confirmed.
 - NO PHP DETECTED (green): nothing POST-shaped is processed and there are
   zero PHP indicators (no banner, no session cookie) — consistent with a
   static site; nothing to exploit at that URL.
