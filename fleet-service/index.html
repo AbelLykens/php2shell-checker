@@ -796,11 +796,6 @@ function render(f) {
   $('tech').innerHTML = techInfo(f, v);
   $('raw').textContent = JSON.stringify(f, null, 2);
   $('techcard').hidden = false;
-  try {
-    if (localStorage.getItem('techcard_open') === '1') {
-      $('techcard').open = true;
-    }
-  } catch (_) {}
 }
 
 /* ------------------------------------------------------------------- polling */
@@ -1271,9 +1266,6 @@ $('url').addEventListener('keydown', e => { if (e.key === 'Enter') run(false); }
 $('url').addEventListener('input', () => {
   renderRecheck();
   renderDiyScript();
-});
-$('techcard').addEventListener('toggle', () => {
-  try { localStorage.setItem('techcard_open', $('techcard').open ? '1' : '0'); } catch (_) {}
 });
 renderDiyScript();
 loadReleases();
