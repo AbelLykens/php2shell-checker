@@ -314,7 +314,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.55";
+const BUILD = "2026-10-21.56";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -1741,6 +1741,12 @@ setTimeout(prewarmPow, 800);   // solve the first PoW while the user types
       }
     }
     run(false);
+  } else if (!$('url').value) {
+    // new visitor on the bare homepage: a ready-to-run example target
+    // (not auto-checked; Check runs it)
+    $('url').value = 'news.ycombinator.com';
+    renderRecheck();
+    renderDiyScript();
   }
 })();
 
