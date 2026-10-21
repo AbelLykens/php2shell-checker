@@ -46,6 +46,21 @@ Proof of work (hashcash-style, abuse brake):
   Challenges are random, purpose-bound, expire after pow_ttl seconds, and are
   burned on use (replay-proof). 0 bits disables a flow (tests).
 
+Caches (busy-server design):
+  * OG preview cards are cached ON DISK (og-cache dir next to the DB by
+    default), not in process memory - a restart keeps its cache and a busy
+    box does not trade RAM for PNGs. Entries expire after _OG_TTL seconds;
+    the GC thread removes stale files.
+  * A localhost memcached (127.0.0.1:11211, --memcached none to disable)
+    acts as a read-only METRICS BUS: a 1s publisher thread writes the live
+    queue depth, in-flight/active counts and per-job queue positions
+    (keys "p2s:queue_depth", "p2s:in_flight", "p2s:jobs_active",
+    "p2s:qp/<job_id>"). Status polls read the O(1) position from memcached
+    instead of scanning the queue under its lock; the exact in-process
+    computation stays as fallback. Every memcached call is best-effort with
+    a reconnect backoff: if memcached dies, the service keeps running and
+    falls back to local computation automatically.
+
 Probes (deliberately inert, never exploit-shaped):
   Every probe follows redirects like a browser would: up to max_redirects
   hops, each hop SSRF-guarded; 301/302/303 convert POST->GET, 307/308 keep
@@ -78,10 +93,13 @@ Persistence (results -> limit re-tests):
 Run:  python3 server.py [--host 0.0.0.0] [--port 8971] [--workers 8]
                        [--db PATH|none] [--retain-hours 168]
                        [--max-urls 1] [--admin-token TOKEN]
-  (admin token also readable from env PHP2SHELL_ADMIN_TOKEN)
+                       [--memcached ADDR|none] [--og-cache-dir DIR|none]
+  (admin token also readable from env PHP2SHELL_ADMIN_TOKEN,
+   memcached address from env PHP2SHELL_MEMCACHED)
 """
 
 import argparse
+import bisect
 import hashlib
 import hmac
 import html
@@ -105,7 +123,7 @@ import zlib
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 DEFAULTS = dict(
     host="127.0.0.1",
@@ -133,6 +151,9 @@ DEFAULTS = dict(
     pow_scan_bits=18,       # PoW difficulty for job submission (~1s in a browser)
     pow_poll_bits=12,       # lighter PoW for status polls (CPU-throttles polling)
     pow_ttl=180.0,          # seconds a PoW challenge stays valid; single-use
+    memcached="127.0.0.1:11211",  # localhost metrics bus ('none' disables)
+    og_cache_dir=None,      # default: og-cache/ next to the DB file ('none' disables)
+    metrics_interval=1.0,   # seconds between memcached metrics publishes
 )
 
 BOUNDARY = "----php2shellfleetcheck7d1a"
@@ -606,6 +627,169 @@ def load_allowlist(path):
     return entries or None
 
 
+# ---------------------------------------------------------------- metrics bus
+
+class Memcache(object):
+    """Minimal memcached text-protocol client (stdlib sockets only).
+
+    Role in this service: a localhost METRICS BUS for queue state - the
+    publisher thread writes queue depth / in-flight / per-job queue
+    positions, status polls read positions back in O(1) instead of scanning
+    the queue under its lock. Not a data store: every value carries a short
+    TTL and the service degrades gracefully without it (see _fallbacks).
+
+    One persistent connection, serialized by a lock (traffic is tiny:
+    one pipelined write per metrics tick + one GET per status poll).
+    A failure opens a circuit for `retry_backoff` seconds so a dead
+    memcached costs nothing per request; every call returns None/False
+    instead of raising - callers fall back to local computation."""
+
+    def __init__(self, addr, timeout=1.0, retry_backoff=5.0):
+        host, _, port = str(addr).rpartition(":")
+        self.addr = ((host or "127.0.0.1"), int(port) if port else 11211)
+        self.timeout = timeout
+        self.retry_backoff = retry_backoff
+        self.lock = threading.Lock()
+        self.sock = None
+        self.down_until = 0.0     # circuit breaker (monotonic)
+        self.last_ok = 0.0        # last successful exchange (monotonic)
+
+    # -- wire protocol -----------------------------------------------------
+
+    def _connect(self):
+        self.sock = socket.create_connection(self.addr, timeout=self.timeout)
+        self.sock.settimeout(self.timeout)
+
+    def _close(self):
+        try:
+            if self.sock is not None:
+                self.sock.close()
+        except OSError:
+            pass
+        self.sock = None
+
+    def _recv_until(self, buf, marker):
+        """Accumulate into bytearray `buf` until `marker` (bytes) is seen;
+        returns everything up to and including the marker."""
+        while marker not in buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("memcached closed connection")
+            buf.extend(chunk)
+        i = buf.find(marker) + len(marker)
+        out = bytes(buf[:i])
+        del buf[:i]
+        return out
+
+    def _exchange(self, payload, n_replies, markers):
+        """Send payload, collect n_replies CRLF-terminated replies."""
+        buf = bytearray()
+        self.sock.sendall(payload)
+        return [self._recv_until(buf, b"\r\n") for _ in range(n_replies)]
+
+    # -- public API (all best-effort) ---------------------------------------
+
+    def _available(self):
+        return self.sock is not None or time.monotonic() >= self.down_until
+
+    def _run(self, fn):
+        """Run a wire operation with connect + circuit-breaker handling.
+        Returns fn()'s result or None on any failure."""
+        if not self._available():
+            return None
+        with self.lock:
+            if not self._available():
+                return None
+            try:
+                if self.sock is None:
+                    self._connect()
+                out = fn()
+                self.down_until = 0.0
+                self.last_ok = time.monotonic()
+                return out
+            except (OSError, ValueError):
+                self._close()
+                self.down_until = time.monotonic() + self.retry_backoff
+                return None
+
+    def set(self, key, value, ttl=10):
+        data = value if isinstance(value, bytes) else str(value).encode()
+        key = key.encode()
+        cmd = b"set " + key + b" 0 " + str(int(ttl)).encode() \
+            + b" " + str(len(data)).encode() + b"\r\n" + data + b"\r\n"
+
+        def op():
+            replies = self._exchange(cmd, 1, None)
+            return replies and replies[0].startswith(b"STORED")
+        return bool(self._run(op) or False)
+
+    def set_many(self, items, ttl=10):
+        """Pipelined set: one round trip for N keys.
+        items: iterable of (key, value). Returns True when all stored."""
+        keys = list(items)
+        if not keys:
+            return True
+        payload = bytearray()
+        for key, value in keys:
+            data = value if isinstance(value, bytes) else str(value).encode()
+            payload += (b"set " + key.encode() + b" 0 "
+                        + str(int(ttl)).encode() + b" "
+                        + str(len(data)).encode() + b"\r\n" + data + b"\r\n")
+
+        def op():
+            replies = self._exchange(bytes(payload), len(keys), None)
+            return len(replies) == len(keys)
+        return bool(self._run(op) or False)
+
+    def get(self, key):
+        """Value bytes or None (miss / down)."""
+        cmd = b"get " + key.encode() + b"\r\n"
+        buf = bytearray()
+
+        # data blocks need exact-length reads, not markers - handled inline
+        def op():
+            self.sock.sendall(cmd)
+            line = self._recv_until(buf, b"\r\n")
+            if not line.startswith(b"VALUE "):
+                return None   # END (miss) or an error line -> treat as miss
+            nbytes = int(line.rsplit(b" ", 1)[1])
+            raw = self._recv_exact(buf, nbytes + 2)  # data + CRLF
+            self._recv_until(buf, b"END\r\n")
+            return raw[:nbytes]
+        return self._run(op)
+
+    def get_int(self, key):
+        v = self.get(key)
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except ValueError:
+            return None
+
+    def _recv_exact(self, buf, n):
+        while len(buf) < n:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("memcached closed connection")
+            buf.extend(chunk)
+        out = bytes(buf[:n])
+        del buf[:n]
+        return out
+
+    def delete(self, key):
+        cmd = b"delete " + key.encode() + b"\r\n"
+
+        def op():
+            replies = self._exchange(cmd, 1, None)
+            return replies and replies[0].startswith(b"DELETED")
+        return bool(self._run(op) or False)
+
+    def healthy(self):
+        """Live probe for /api/health - a real round trip, cheap and local."""
+        return self.set("p2s:health", "1", ttl=5)
+
+
 class ServiceState(object):
     def __init__(self, cfg):
         self.cfg = cfg
@@ -640,6 +824,18 @@ class ServiceState(object):
         self.pow_lock = threading.Lock()
         self.seq = 0             # FIFO sequence for queue-position reporting
         self.seq_lock = threading.Lock()
+        # metrics bus (localhost memcached, optional): queue depth + per-job
+        # positions are published by a 1s thread; readers fall back to local
+        # computation whenever a value is missing. og_cards live on disk.
+        mc = cfg.get("memcached")
+        self.mc = Memcache(mc) if mc and mc != "none" else None
+        og_dir = cfg.get("og_cache_dir")
+        if og_dir is None or og_dir == "":
+            base = (os.path.dirname(os.path.abspath(cfg["db_path"]))
+                    if cfg.get("db_path")
+                    else os.path.dirname(os.path.abspath(__file__)))
+            og_dir = os.path.join(base, "og-cache")
+        self.og = None if og_dir == "none" else _OgCache(og_dir)
 
     # -- proof of work ------------------------------------------------------
     # Hashcash-style: client finds nonce so that SHA-256("<id>:<nonce>") has
@@ -771,6 +967,9 @@ class ServiceState(object):
             self.workers.append(t)
         gc = threading.Thread(target=self._gc_loop, daemon=True)
         gc.start()
+        pub = threading.Thread(target=self._metrics_loop, daemon=True)
+        pub.start()
+        self.workers.append(pub)   # stopped via self.stop, like the rest
 
     def _worker(self):
         while not self.stop.is_set():
@@ -858,6 +1057,56 @@ class ServiceState(object):
                 stale = [k for k, v in self.pow.items() if v[0] < now]
                 for k in stale:
                     del self.pow[k]
+            if self.og is not None:
+                try:
+                    self.og.gc()   # stale OG card files off the disk
+                except Exception:
+                    pass
+
+    def _metrics_loop(self):
+        """Publish queue state to the localhost memcached bus every
+        metrics_interval seconds. Pipelined writes: counters
+        (p2s:queue_depth / p2s:in_flight / p2s:jobs_active, TTL 10s) and
+        p2s:qp/<job_id> per queued job (TTL 5s, so positions of finished
+        jobs expire on their own). Status polls read these instead of
+        scanning the queue under its lock; everything here is best-effort -
+        with memcached down the loop simply skips and readers fall back."""
+        interval = max(0.2, float(self.cfg.get("metrics_interval", 1.0)))
+        while not self.stop.wait(interval):
+            if self.mc is None:
+                return
+            try:
+                with self.jobs_lock:
+                    jobs_active = sum(
+                        1 for j in self.jobs.values()
+                        if len(j.results) < len(j.urls))
+                counters = [
+                    ("p2s:queue_depth", self.q.qsize()),
+                    ("p2s:in_flight", self.in_flight),
+                    ("p2s:jobs_active", jobs_active),
+                ]
+                with self.q.mutex:      # one snapshot of the queue
+                    queued = [it for it in self.q.queue
+                              if isinstance(it, tuple) and len(it) == 3]
+                positions = []
+                if queued:
+                    seqs = sorted(it[2] for it in queued)
+                    first = {}          # job -> its earliest item's seq
+                    for job_id, _u, s in queued:
+                        if job_id not in first or s < first[job_id]:
+                            first[job_id] = s
+                    positions = [
+                        ("p2s:qp/" + job_id,
+                         # position = queued items ahead of the job's first
+                         # item (same formula as the in-process fallback)
+                         bisect.bisect_left(seqs, s))
+                        for job_id, s in first.items()
+                    ]
+                self.mc.set_many(counters, ttl=10)
+                if positions:
+                    self.mc.set_many(positions, ttl=5)
+            except Exception:
+                continue   # never let metrics kill anything
 
     def shutdown(self):
         self.stop.set()
@@ -889,7 +1138,7 @@ class ServiceState(object):
         url = _norm_target(url)
         if url is None:
             return None
-        hit = _OG.get(url)
+        hit = self.og.get(url) if self.og is not None else None
         if hit is not None:
             return hit
         facts = None
@@ -902,7 +1151,8 @@ class ServiceState(object):
             if facts is not None:
                 facts.pop("cached", None)
         png = og_png(facts, self.get_releases())
-        _OG.put(url, png)
+        if self.og is not None:
+            self.og.put(url, png)
         return png
 
     # -- readouts ----------------------------------------------------------
@@ -918,12 +1168,19 @@ class ServiceState(object):
         done = len(results)
         state = "done" if done >= total else ("running" if done else "queued")
         # queue position: how many scan items submitted BEFORE this job are
-        # still waiting in the queue (in-flight work is reported separately)
+        # still waiting in the queue (in-flight work is reported separately).
+        # Fast path: the memcached metrics bus publishes positions every
+        # second - read O(1) from there. Fallback (bus down, key expired or
+        # job submitted between ticks): the exact in-process scan below.
         ahead = 0
         if state != "done":
-            with self.q.mutex:
-                ahead = sum(1 for it in self.q.queue
-                            if isinstance(it, tuple) and it[2] < job.seq)
+            published = self.mc.get_int("p2s:qp/" + job.id) if self.mc else None
+            if published is not None:
+                ahead = published
+            else:
+                with self.q.mutex:
+                    ahead = sum(1 for it in self.q.queue
+                                if isinstance(it, tuple) and it[2] < job.seq)
         return {
             "job_id": job.id,
             "level": job.level,
@@ -968,6 +1225,13 @@ class ServiceState(object):
         if self.store:
             health["config"]["db_path"] = self.cfg["db_path"]
             health["config"]["retain_hours"] = self.cfg["retain_hours"]
+        if self.og is not None:
+            health["config"]["og_cache_dir"] = self.og.dir
+        if self.mc is not None:
+            health["memcached"] = {
+                "addr": "%s:%s" % self.mc.addr,
+                "ok": bool(self.mc.healthy()),
+            }
         return health
 
 
@@ -985,8 +1249,7 @@ _LLMS = None        # decoded once; /llms.txt served as text/plain
 # browser with verdict logic, and it mirrors the client's interpret() —
 # both are locked by the test suites (e2e: python port, node: JS original).
 _OG_TTL = 600          # seconds a rendered PNG is reused ("cache a bit")
-_OG_CACHE = {}         # url -> (monotonic_ts, png_bytes)
-_OG_CACHE_MAX = 256
+_OG_CACHE_MAX_FILES = 4096   # disk cache cap; oldest files dropped beyond this
 
 OG_W, OG_H = 1200, 630
 
@@ -1090,6 +1353,13 @@ def _blk_preview(facts):
     if 200 <= st(ue) < 400:
         return {"cls": "ok", "text": "active (multipart rejected on "
                 + ("POST+PUT+PATCH" if len(mps) == 3 else "POST") + ", likely before PHP)"}
+    # When every probe (including GET) was edge-blocked (403/406), mark WAF assumed.
+    gst = st(g)
+    is_blk = lambda s: s in (403, 406)
+    if is_blk(gst) and is_blk(st(ue)) and all(is_blk(st(p)) for _, p in mps):
+        return {"cls": "warn", "waf": True,
+                "text": "WAF assumed (%s on GET+%s)"
+                        % (gst, "+".join(m for m, _ in mps))}
     return {"cls": "info",
             "text": "all rejected (%s) — edge vs app-level indistinguishable remotely"
                     % ", ".join("%s %s" % (m, st(p)) for m, p in mps)}
@@ -1105,6 +1375,8 @@ def _verdict_preview(facts, releases):
         return "OFFLINE", "ok", php, blk
     if "error" in g and (blk is None or "error" in ue or blk.get("static")):
         return "UNREACHABLE", "info", php, blk
+    if blk and blk.get("waf"):
+        return "TEST BLOCKED", "warn", php, blk
     if php["cls"] == "bad" and blk and blk["cls"] == "bad":
         return "EXPOSED", "bad", php, blk
     if php["cls"] == "bad":
@@ -1273,22 +1545,72 @@ def og_png(facts, releases):
 
 
 class _OgCache(object):
-    """Small TTL cache so repeated previews of the same URL render once."""
+    """Disk-backed TTL cache so repeated previews of the same URL render
+    once - across restarts, and without holding PNGs in process memory on a
+    busy server. Files are keyed by the (normalized) URL's SHA-256; mtime is
+    the freshness marker, so expiry + the GC's purge need no side index."""
+
+    def __init__(self, directory):
+        self.dir = directory
+        os.makedirs(self.dir, exist_ok=True)
+
+    def _path(self, url):
+        return os.path.join(
+            self.dir, hashlib.sha256(url.encode("utf-8", "replace"))
+            .hexdigest()[:32] + ".png")
 
     def get(self, url):
-        hit = _OG_CACHE.get(url)
-        if hit and time.monotonic() - hit[0] < _OG_TTL:
-            return hit[1]
-        return None
+        try:
+            st = os.stat(self._path(url))
+            if time.time() - st.st_mtime > _OG_TTL:
+                return None
+            with open(self._path(url), "rb") as f:
+                return f.read()
+        except OSError:
+            return None
 
     def put(self, url, png):
-        _OG_CACHE[url] = (time.monotonic(), png)
-        if len(_OG_CACHE) > _OG_CACHE_MAX:
-            for k in sorted(_OG_CACHE, key=lambda k: _OG_CACHE[k][0])[:64]:
-                _OG_CACHE.pop(k, None)
+        p = self._path(url)
+        tmp = "%s.tmp.%d" % (p, threading.get_ident())
+        try:
+            with open(tmp, "wb") as f:
+                f.write(png)
+            os.replace(tmp, p)   # atomic: readers never see a half PNG
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def gc(self, ttl=_OG_TTL):
+        """Delete stale files; enforce the file-count cap (oldest first)."""
+        try:
+            entries = []
+            now = time.time()
+            for name in os.listdir(self.dir):
+                p = os.path.join(self.dir, name)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                if now - st.st_mtime > ttl:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+                else:
+                    entries.append((st.st_mtime, p))
+            entries.sort()
+            for _mt, p in entries[:max(0, len(entries) - _OG_CACHE_MAX_FILES)]:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
 
-_OG = _OgCache()
+_OG = None   # instantiated per ServiceState (needs the configured cache dir)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1588,6 +1910,13 @@ def main(argv=None):
                     help="PoW difficulty for job submission (0 disables, default 18)")
     ap.add_argument("--pow-poll-bits", type=int, default=DEFAULTS["pow_poll_bits"],
                     help="PoW difficulty for status polls (0 disables, default 12)")
+    ap.add_argument("--memcached", default=None, metavar="ADDR|none",
+                    help="localhost memcached for the queue metrics bus "
+                         "(default 127.0.0.1:11211, env PHP2SHELL_MEMCACHED, "
+                         "'none' disables - service falls back to local computation)")
+    ap.add_argument("--og-cache-dir", default=None, metavar="DIR|none",
+                    help="directory for rendered OG card PNGs on disk "
+                         "(default: og-cache/ next to the DB file; 'none' disables)")
     args = ap.parse_args(argv)
 
     cfg = dict(DEFAULTS)
@@ -1598,6 +1927,12 @@ def main(argv=None):
                trust_proxy=args.trust_proxy, max_urls_per_job=args.max_urls,
                pow_scan_bits=args.pow_scan_bits, pow_poll_bits=args.pow_poll_bits,
                admin_token=args.admin_token or os.environ.get("PHP2SHELL_ADMIN_TOKEN"))
+    mc = args.memcached or os.environ.get("PHP2SHELL_MEMCACHED") \
+        or DEFAULTS["memcached"]
+    cfg["memcached"] = None if mc.strip().lower() == "none" else mc.strip()
+    ogd = args.og_cache_dir
+    cfg["og_cache_dir"] = None if (ogd is None or ogd.strip().lower() == "none") \
+        else ogd
     db = args.db
     if db is None:
         db = os.path.join(os.path.dirname(os.path.abspath(__file__)),

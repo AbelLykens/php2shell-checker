@@ -118,7 +118,7 @@
   table.tech td:first-child { white-space: nowrap; }
   .dimlabel { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; min-width: 92px; }
   #verdict .chip { font-size: 13px; }
-  #recheck { min-width: 172px; }   /* countdown text changes width otherwise */
+  #go { min-width: 140px; }   /* stays stable when text switches to Re-check / countdown */
   #techcard > summary { margin-top: 12px; }   /* expandible inside the result card */
 </style>
 </head>
@@ -149,8 +149,6 @@
   <div class="card" id="rescard" hidden>
     <div class="reshead">
       <span class="mono" id="resurl"></span>
-      <button id="recheck" type="button" disabled
-              title="Probe again now, ignoring stored results — allowed 3 minutes after the last test">Re-check</button>
     </div>
     <div class="small mono" id="testdate" hidden style="margin-top:4px"></div>
     <div class="resrow"><span class="dimlabel">verdict</span> <span id="verdict"></span></div>
@@ -220,7 +218,7 @@
 
 /* visible build id: a stale tab is instantly recognizable (footer +
    Technical info). Bump on every UI deploy. */
-const BUILD = "2026-10-21.14";
+const BUILD = "2026-10-21.15";
 
 /* ------------------------------------------------- server-side patched list */
 
@@ -331,6 +329,12 @@ function blockDimension(facts) {
   // baseline also rejected: identical rejection of both content types cannot be
   // told apart remotely from an app-level 405/403, which happens AFTER PHP
   // parsed the body - so it proves nothing protective.
+  // When every probe (including GET) was edge-blocked (403/406), mark WAF assumed.
+  const gst = st(g);
+  const isBlock = s => s === 403 || s === 406;
+  if (isBlock(gst) && isBlock(sue) && mps.every(([_, p]) => isBlock(st(p)))) {
+    return { cls: 'warn', waf: true, text: 'WAF assumed (' + gst + ' on GET+' + mps.map(([m]) => m).join('+') + ')' };
+  }
   const rej = mps.map(([m, p]) => m + ' ' + st(p)).join(', ');
   return { cls: 'info', text: 'all rejected (' + rej + ') — edge vs app-level indistinguishable remotely' };
 }
@@ -344,6 +348,8 @@ function interpret(facts) {
   if (/connectionrefused/i.test(String(g.error || ''))) { cls = 'ok'; label = 'OFFLINE'; }
   // GET failed AND the block probes also failed or never ran -> unreachable
   else if (g.error && (!blk || ue.error || blk.static)) { cls = 'info'; label = 'UNREACHABLE'; }
+  // edge-level block: WAF or firewall refused our probes outright -> TEST BLOCKED
+  else if (blk && blk.waf) { cls = 'warn'; label = 'TEST BLOCKED'; }
   else if (php.cls === 'bad' && blk && blk.cls === 'bad') { cls = 'bad'; label = 'EXPOSED'; }
   else if (php.cls === 'bad') { cls = 'bad'; label = 'UNPATCHED'; }
   else if (blk && blk.cls === 'ok') { cls = 'ok'; label = 'BLOCKED'; }
@@ -397,16 +403,33 @@ function renderTestDate() {
 }
 
 /* Re-check cooldown: force re-probes of the same URL are allowed 3 minutes
-   after the last test; the button shows the countdown while waiting. */
+   after the last test. The unified Check button becomes "Re-check" / countdown
+   when viewing that target's result, and reverts to "Check" as soon as the
+   user edits the text box. */
 const RECHECK_COOLDOWN = 180;
 function countdownText(s) {
   return s >= 60 ? Math.floor(s / 60) + ' min ' + (s % 60) + ' sec' : s + ' sec';
 }
+function currentInputMatchesLast() {
+  if (!lastFacts || !lastUrl) return false;
+  const raw = String($('url').value || '').trim();
+  const clean = stripUrlParts(raw);
+  if (!clean) return false;
+  return ('https://' + clean) === lastUrl;
+}
 function renderRecheck() {
-  const el = $('recheck');
-  if (running) { el.disabled = true; el.textContent = 'Re-check'; return; }
-  if (!lastFacts) { el.disabled = true; return; }
-  if (!lastFacts.fetched_at) { el.disabled = false; el.textContent = 'Re-check'; return; }
+  const el = $('go');
+  if (running) { el.disabled = true; return; }
+  if (!currentInputMatchesLast()) {
+    el.disabled = false;
+    el.textContent = 'Check';
+    return;
+  }
+  if (!lastFacts.fetched_at) {
+    el.disabled = false;
+    el.textContent = 'Re-check';
+    return;
+  }
   const wait = RECHECK_COOLDOWN - Math.floor(Date.now() / 1000 - lastFacts.fetched_at);
   if (wait > 0) {
     el.disabled = true;
@@ -710,10 +733,12 @@ function noDefaultPort(u) {
 }
 
 /* verdict-colored favicon: green dot for protective results, red for bad
-   ones; the neutral gray default lives in the static <head> link */
+   ones, orange for blocked tests; the neutral gray default lives in the
+   static <head> link */
 const FAVICON = {
-  ok:  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='26' fill='%231c6b34'/%3E%3C/svg%3E",
-  bad: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='26' fill='%23a12626'/%3E%3C/svg%3E",
+  ok:   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='26' fill='%231c6b34'/%3E%3C/svg%3E",
+  bad:  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='26' fill='%23a12626'/%3E%3C/svg%3E",
+  warn: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='26' fill='%23c28a1c'/%3E%3C/svg%3E",
 };
 function setFavicon(cls) {
   const f = $('fav');
