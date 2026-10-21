@@ -1509,9 +1509,7 @@ def _verdict_preview(facts, releases):
     if blk and blk["cls"] == "ok":
         return "BLOCKED", "ok", php, blk
     if blk and blk["cls"] == "bad":
-        if g.get("php_session_cookie") or g.get("x_powered_by"):
-            return "ASSUMED VULNERABLE", "bad", php, blk
-        return "UNKNOWN", "info", php, blk
+        return "ASSUMED VULNERABLE", "bad", php, blk
     if (blk and blk.get("static") and php["cls"] == "info"
             and not g.get("php_session_cookie") and not g.get("x_powered_by")):
         return "NO PHP DETECTED", "ok", php, blk
